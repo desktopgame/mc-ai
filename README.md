@@ -2,10 +2,48 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## Phase 5 — 状態差分と観測
+
+MOD `0.0.5` は、ワールド入場時に `POST /v1/snapshot` で現在状態を送り、その後は `POST /v1/events` へ変更だけを送る。
+観測はサーバー側で毎秒行い、HTTP通信は専用スレッドで同時1件まで。無変更時は約5～6秒ごとに空のイベント配列を送るだけで、全状態やLLMプロンプトは送らない。
+
+同期するもの:
+
+- 所有者と読み込み済みCompanionの座標（最後に同期した座標から2ブロック以上移動）、体力。
+- 所有者の所持品・防具の個数差分。Companionのインベントリは未実装。アイテム名の独自変更・NBT・本の内容等は送らない。
+- Companionのtaskと結果、タスク完了・失敗。
+- Companionから16ブロック以内の近い敵最大16体。種類と2ブロック刻みの距離、範囲への出入りと更新。
+
+Companionの出現・死亡や未読込化・ディメンション変更時は状態構造が変わるためsnapshotで再同期する。定期的なfull snapshotは使わない。
+各メッセージにはセッションIDと連番を付け、ACK済み状態を差分の基準にする。連番不一致・接続失敗・Daemon再起動時は5秒後に新しいセッションで再同期する。
+Daemonは差分を一括検証して適用し、最大32セッション・各100イベントをメモリに保持する。15秒以上更新がない状態はstaleとし、判断には利用しない。
+
+現在状態を確認するには別のPowerShellから:
+
+```powershell
+$observed = Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/state -Method Post -ContentType application/json -Body '{"version":1}'
+$observed | ConvertTo-Json -Depth 8
+```
+
+観測済み状態で判断を試す場合（ゲーム操作は実行しない）:
+
+```powershell
+$request = @{version=1;session=$observed.session;goal=@{type='follow_owner'};availableActions=@('follow','stop','look')} | ConvertTo-Json -Depth 4
+Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/decision -Method Post -ContentType application/json -Body $request | ConvertTo-Json -Depth 4
+```
+
+判断モデルへは目的に必要な座標・Companion体力と操作一覧だけを渡す。観測処理からLLMを自動呼び出しせず、Socialの会話プロンプトにも全状態を追加しない。
+シングルプレイヤー用。敵・所持品の観測は1秒ごとのサンプリングのため、サンプル間だけに発生した短い変化は記録しない。敵16体の上限を越えた場合の出入りは観測対象集合の変化を意味する。
+Daemon切断中も手動操作は利用できるが、キャッシュの更新は再接続まで止まる。
+
+Pythonテスト26件・Javaテスト11件とビルドに成功。2026-09-26、実ゲームで初回同期、移動・所持品変更・追従と停止の差分受信を確認した。
+Daemonを再起動してキャッシュを失わせた後、新しいセッションへの自動再同期と差分送信の再開を確認。復旧したキャッシュから実モデルのfollow判断も取得できた（executed=false）。Phase 5完了。
+敵の出入り・体力変化・ディメンション変更は自動テストまたは実装確認の範囲で、今回の実ゲーム操作では未検証。
+
 ## Phase 4 — 独立したTactical Decision
 
 `DecisionProvider` を追加した。決定的なmockと、JSON schema対応のローカルOpenAI互換API実装を切り替えられる。
-今回の変更はDaemonのみで、MODは `0.0.4` のまま。Social Brainの会話から判断を呼ぶ処理はまだ接続しない。
+Phase 4時点の変更はDaemonのみ。Social Brainの会話から判断を呼ぶ処理はまだ接続しない。
 
 ```powershell
 # モックだけで判断を検証する（LLM不要）
@@ -32,7 +70,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/decision -Method Post -ContentTy
 
 ## Phase 3 — ローカルSocial Brain
 
-現在のMODは `0.0.4`。`!agent chat メッセージ` でローカルLLMと会話できる。`!agent forget` で現在の会話履歴を消す。
+`!agent chat メッセージ` でローカルLLMと会話できる。`!agent forget` で現在の会話履歴を消す。
 会話から操作指示は生成・実行しない。追従・停止等はPhase 2の手動コマンドを使う。
 
 このPCの設定:
@@ -93,7 +131,7 @@ Phase 1（`0.0.2`）で追加した固定通信はPhase 2でも利用できる�
 
 1. `python agent/src/daemon.py --port 8767` でDaemonを起動する。このPCでは既定の8766が利用できなかったため8767を使用する。
 2. `.\scripts\forge.ps1 build` でビルドする。
-3. Minecraftを終了してから `forge-mod/build/libs/mc-ai-companion-0.0.4.jar` をPrismの `minecraft/mods/` へ入れる。古いjarは削除するか `.jar.disabled` へ改名し、複数バージョンをロードしない。
+3. Minecraftを終了してから `forge-mod/build/libs/mc-ai-companion-0.0.5.jar` をPrismの `minecraft/mods/` へ入れる。古いjarは削除するか `.jar.disabled` へ改名し、複数バージョンをロードしない。
 4. `minecraft/config/mcaicompanion.cfg` を以下に設定する。既定値は `http://127.0.0.1:8766`。今回のPrism検証環境は8767へ設定済み。
 
 ```text
@@ -181,8 +219,8 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-0.0.4.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
-ログ中の `MC AI Companion initialized (Phase 3)` が現在のMODの初期化メッセージ。
+成果物は `forge-mod/build/libs/mc-ai-companion-0.0.5.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
+ログ中の `MC AI Companion initialized (Phase 5)` が現在のMODの初期化メッセージ。
 
 旧ForgeGradleの配布先・Gradle互換性の問題を避けるため、[anatawa12のForgeGradle 1.2修正版](https://github.com/anatawa12/ForgeGradle-1.2)を利用する。バージョンは固定し、動的な `+` 指定は使わない。
 

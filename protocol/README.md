@@ -1,4 +1,4 @@
-# Protocol v1 — Phases 1–4
+# Protocol v1 — Phases 1–5
 
 HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数の `version: 1` を含める。
 
@@ -47,4 +47,27 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 体力6以下はstopのみ、followは所有者まで2ブロック超・32ブロック以内のみ。目的と一致しないfollow/look、未許可の操作、余分なパラメーターは拒否する。
 入力不正は400、判断provider未設定・busy・タイムアウト・不正出力は503でdecisionを返さない。
 
-`executed: false` は判断の提案だけであることを示す。ゲームの状態はこの段階では手動fixtureで渡し、状態キャッシュや自動操作には接続しない。
+`executed: false` は判断の提案だけであることを示す。Phase 5では、明示的なstateの代わりに `session` を指定すればキャッシュの状態を使える。stateとsessionの同時指定は400、古い状態・Companion不在・不明なセッションは409。自動操作は行わない。
+
+## Phase 5 — 観測同期
+
+- `POST /v1/snapshot`: [初回同期例](examples/snapshot-request.json)。`version / session / sequence / state`。
+- `POST /v1/events`: [イベント例](examples/events-request.json)。`version / session / sequence / events`。
+- ACK: `{"version":1,"sequence":0,"synced":true}`。正しいACKまでクライアントの基準状態を進めない。
+- `POST /v1/state`: `{"version":1}` で最後に更新されたセッション、`session` を付けると特定セッションを参照する。
+
+stateはdimension・owner・companion・hostilesのみ。ownerはposition・health・inventory、companionはid・position・health・task・result（未読込ならnull）。hostilesは一時IDからtype・distanceへの辞書。
+自由文・会話・所有者名・余分なフィールドは拒否する。inventoryはレジストリ名から個数への辞書で、NBTは含まない。hostilesは最大16、inventoryは最大128種類。
+
+イベント:
+
+- `position_changed_significantly`: entity（owner/companion）とposition。
+- `health_changed`: entityとhealth。
+- `inventory_changed`: 所有者のadded/removed個数。差分適用前の個数と矛盾する場合は409。
+- `task_changed / task_completed / task_failed`: taskとresult。
+- `hostile_entered_range / hostile_updated`: idとobservation（type/distance）。
+- `hostile_left_range`: id。
+
+sequenceは非負整数。snapshotでセッションを初期化し、eventsは現在値+1だけを受理する。重複・欠落・順序逆転は409を返す。再同期には新しいsessionでsnapshotを送る。
+バッチは最大64イベント・32KiB。全イベントをコピーへ適用して検証後に一括反映し、不正なバッチで一部だけ更新しない。
+空のeventsは連番と最終更新時刻だけを進める。15秒を超えて更新がない場合stale=true。切断・死亡・チャンク未読込は敵の見かけの消失と同様、観測の範囲に従う。

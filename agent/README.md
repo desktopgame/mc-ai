@@ -1,6 +1,23 @@
-# Agent Daemon — Phase 4
+# Agent Daemon — Phase 5
 
-Python標準ライブラリで動く固定ping/pongとローカルSocial Brain。確認環境はPython 3.14.0。設定を省略するとping専用になる。
+Python標準ライブラリで動く固定ping/pong、観測キャッシュ、ローカルSocial BrainとTactical Decision。確認環境はPython 3.14.0。モデル設定を省略するとpingと観測キャッシュだけを利用できる。
+
+## 状態キャッシュと観測
+
+Phase 5の `/v1/snapshot`・`/v1/events`・`/v1/state` はモデル設定なしでも利用できる。起動引数とAPIキー設定は従来どおり。
+モデルを呼ばずに現在状態を保持し、差分のバッチを検証して反映する。古い連番・重複・不整合は409を返して再同期を要求する。
+キャッシュとイベント履歴はメモリ内のみで、Daemon再起動時に消える。MODが新しいセッションで自動的に再同期する。
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/state -Method Post -ContentType application/json -Body '{"version":1}' | ConvertTo-Json -Depth 8
+```
+
+状態には `stale`・最終更新からの秒数・sequenceを付ける。ゲームの一時停止中も更新が止まるため、15秒経過でstaleになる。
+キャッシュから判断するには `/v1/decision` へstateの代わりにsessionを指定する。staleまたはCompanionが未読込なら409を返す。
+この場合もモデルへ送るのは目的と必要な数値状態だけで、所持品全体・イベント履歴・セッションID・会話は送らない。操作の自動実行はしない。
+
+キャッシュは最大32セッション・各100イベント。新しい観測による古いセッションの追い出しと、読み出し時のコピーでメモリ量・外部からの改変を制限する。
+観測APIの入力は32KiB、その他は8KiBまで。仕様とfixtureは [Protocol README](../protocol/README.md) を参照。
 
 ## Tactical Decision
 
@@ -30,7 +47,7 @@ python agent/src/daemon.py --port 8767 --config agent/config.local.json --decisi
 JSON schemaをサポートするローカルサーバーが必要。[LM Studioの仕様](https://lmstudio.ai/docs/developer/openai-compat/structured-output)。
 
 ログはprovider・model・入出力サイズ・遅延・action・固定reasonCodeだけで、入力JSON本文やキーは出さない。
-テストは `python -m unittest discover -s agent/tests -v`。19件で会話と判断の分離、HTTP、出力検証、失敗系を確認する。
+テストは `python -m unittest discover -s agent/tests -v`。26件で会話と判断の分離、観測の同期、HTTP、出力検証、失敗系を確認する。
 
 ## ローカルLLMとAPIキー
 

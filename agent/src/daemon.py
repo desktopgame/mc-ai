@@ -5,10 +5,11 @@ import logging
 from pathlib import Path
 from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSONA
 from decision import DecisionService, MockDecisionProvider, LocalDecisionProvider, DecisionError
+from state_cache import StateCache, SyncError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
-MAX_BODY = 8192
+MAX_BODY = 32768
 
 
 def turn(payload, brain=None):
@@ -69,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, {"version": 1, "error": code})
 
     def do_POST(self):
-        if self.path not in ("/v1/turn", "/v1/decision"):
+        if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state"):
             self.error(404, "not_found")
             return
         if self.headers.get_content_type() != "application/json":
@@ -83,7 +84,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self.error(411, "content_length_required")
             return
-        if not 0 < length <= MAX_BODY:
+        body_limit = MAX_BODY if self.path in ("/v1/snapshot", "/v1/events") else 8192
+        if not 0 < length <= body_limit:
             self.error(413, "invalid_body_size")
             return
         try:
@@ -91,13 +93,31 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("incomplete_body")
             payload = json.loads(raw.decode("utf-8"))
-            if self.path == "/v1/decision":
+            if self.path in ("/v1/snapshot", "/v1/events"):
+                response = self.server.states.update(payload, snapshot=self.path == "/v1/snapshot")
+                LOG.info("observation kind=%s sequence=%d events=%d", self.path, response["sequence"], len(payload.get("events", [])))
+            elif self.path == "/v1/state":
+                response = self.server.states.view(payload)
+            elif self.path == "/v1/decision":
                 service = getattr(self.server, "decisions", None)
                 if service is None:
                     raise DecisionError("decision_not_configured")
+                if isinstance(payload, dict) and "session" in payload:
+                    if "state" in payload: raise ValueError("ambiguous_decision_state")
+                    cached = self.server.states.view({"version": payload.get("version"), "session": payload["session"]})
+                    if cached["stale"]: raise SyncError("stale_state")
+                    state = cached["state"]
+                    if state["companion"] is None: raise SyncError("companion_unavailable")
+                    payload = {"version": payload.get("version"), "goal": payload.get("goal"),
+                               "availableActions": payload.get("availableActions"),
+                               "state": {"companion": {"health": state["companion"]["health"], "position": state["companion"]["position"]},
+                                         "owner": {"position": state["owner"]["position"]}}}
                 response = service.decide(payload)
             else:
                 response = turn(payload, getattr(self.server, "brain", None))
+        except SyncError as exc:
+            self.error(409, str(exc))
+            return
         except DecisionError as exc:
             LOG.warning("decision failure=%s", str(exc))
             self.error(503, str(exc))
@@ -147,6 +167,7 @@ def main():
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         server.brain = brain
         server.decisions = decisions
+        server.states = StateCache()
         LOG.info("Agent Daemon listening on %s:%d (protocol 1, social=%s)", args.host, args.port, brain is not None)
         try:
             server.serve_forever()

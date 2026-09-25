@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "session": "test-observation-session",
+  "sequence": 1,
+  "events": [
+    {"type": "position_changed_significantly", "entity": "owner", "position": [12, 64, 0]},
+    {"type": "health_changed", "entity": "companion", "health": 18},
+    {"type": "inventory_changed", "added": {"minecraft:torch": 3}, "removed": {"minecraft:stone": 1}},
+    {"type": "task_changed", "task": "follow", "result": "following"},
+    {"type": "hostile_entered_range", "id": "mob-10", "observation": {"type": "Skeleton", "distance": 8}}
+  ]
+}

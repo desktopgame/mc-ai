@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "session": "test-observation-session",
+  "sequence": 0,
+  "state": {
+    "dimension": 0,
+    "owner": {"position": [8, 64, 0], "health": 20, "inventory": {"minecraft:stone": 4}},
+    "companion": {"id": "test-companion", "position": [0, 64, 0], "health": 20, "task": "idle", "result": "none"},
+    "hostiles": {}
+  }
+}
