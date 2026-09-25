@@ -1,0 +1,27 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url = 'https://maven.minecraftforge.net/' }
+    }
+    dependencies {
+        classpath 'com.anatawa12.forge:ForgeGradle:1.2-1.1.1'
+    }
+}
+
+apply plugin: 'forge'
+
+version = '0.0.1'
+group = 'local.mcai'
+archivesBaseName = 'mc-ai-companion'
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
+
+minecraft {
+    version = '1.7.10-10.13.4.1614-1.7.10'
+    mappings = 'stable_12'
+    runDir = 'run'
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}

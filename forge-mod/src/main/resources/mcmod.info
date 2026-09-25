@@ -1,0 +1,11 @@
+[
+  {
+    "modid": "mcaicompanion",
+    "name": "MC AI Companion",
+    "description": "Phase 0: minimal Forge environment verification mod.",
+    "version": "0.0.1",
+    "mcversion": "1.7.10",
+    "authorList": [],
+    "dependencies": []
+  }
+]
