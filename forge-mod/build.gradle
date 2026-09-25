@@ -10,7 +10,7 @@ buildscript {
 
 apply plugin: 'forge'
 
-version = '0.0.1'
+version = '0.0.2'
 group = 'local.mcai'
 archivesBaseName = 'mc-ai-companion'
 sourceCompatibility = JavaVersion.VERSION_1_8
@@ -25,3 +25,6 @@ minecraft {
 tasks.withType(JavaCompile) {
     options.encoding = 'UTF-8'
 }
+
+repositories { mavenCentral() }
+dependencies { testCompile 'junit:junit:4.13.2' }

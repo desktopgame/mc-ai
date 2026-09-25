@@ -29,3 +29,5 @@ replay_pid*
 forge-mod/build/
 forge-mod/run/
 !forge-mod/gradle/wrapper/gradle-wrapper.jar
+__pycache__/
+*.pyc
