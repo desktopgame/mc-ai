@@ -1,6 +1,36 @@
-# Agent Daemon — Phase 3
+# Agent Daemon — Phase 4
 
 Python標準ライブラリで動く固定ping/pongとローカルSocial Brain。確認環境はPython 3.14.0。設定を省略するとping専用になる。
+
+## Tactical Decision
+
+`--decision-config` でSocialとは別に有効化する。`decision.example.json` はLLM不要のmock。
+実モデル設定を `decision.local.json`（Git管理外）へ作る場合:
+
+```json
+{
+  "provider": "local",
+  "base_url": "http://127.0.0.1:1234/v1",
+  "model": "unsloth/gemma-4-26b-a4b-it",
+  "api_key_file": "../.tools/social-api-key.txt",
+  "timeout_seconds": 15
+}
+```
+
+APIキーは `MCAI_DECISION_API_KEY` 環境変数を優先し、未設定なら `api_key_file` から読む。ファイルパスは設定ファイルからの相対パス。
+今回のローカル検証ではLM Studioの同じキーを利用するが、Socialとは別のキー・モデル・接続設定にもできる。
+
+```powershell
+python agent/src/daemon.py --port 8767 --config agent/config.local.json --decision-config agent/decision.local.json
+```
+
+`POST /v1/decision` は各回2メッセージ（固定systemと匿名化されたゲーム目的・状態）だけを送る。
+会話・判断履歴は保持せず、自然言語のreasoningも要求しない。`response_format: json_schema`、`reasoning_effort: none`、256トークン、temperature 0を指定する。
+生成結果はサーバーのschema保証に依存せずDaemonでも検証する。タイムアウト・不正出力時は503で、操作も自動再試行も行わない。
+JSON schemaをサポートするローカルサーバーが必要。[LM Studioの仕様](https://lmstudio.ai/docs/developer/openai-compat/structured-output)。
+
+ログはprovider・model・入出力サイズ・遅延・action・固定reasonCodeだけで、入力JSON本文やキーは出さない。
+テストは `python -m unittest discover -s agent/tests -v`。19件で会話と判断の分離、HTTP、出力検証、失敗系を確認する。
 
 ## ローカルLLMとAPIキー
 

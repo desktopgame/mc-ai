@@ -2,6 +2,34 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## Phase 4 — 独立したTactical Decision
+
+`DecisionProvider` を追加した。決定的なmockと、JSON schema対応のローカルOpenAI互換API実装を切り替えられる。
+今回の変更はDaemonのみで、MODは `0.0.4` のまま。Social Brainの会話から判断を呼ぶ処理はまだ接続しない。
+
+```powershell
+# モックだけで判断を検証する（LLM不要）
+python agent/src/daemon.py --port 8767 --decision-config agent/decision.example.json
+# このPCの実モデル設定。会話と判断を別々の設定で有効化する。
+python agent/src/daemon.py --port 8767 --config agent/config.local.json --decision-config agent/decision.local.json
+```
+
+別のPowerShellから:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/decision -Method Post -ContentType application/json -InFile protocol/examples/decision-request.json | ConvertTo-Json -Depth 5
+```
+
+目的は `follow_owner / stop / look_at_owner`、判断結果は `follow / stop / look`。`reasonCode` は固定コードだけを返す。
+リクエストから許可した数値状態と目的を再構成し、プレイヤーを `owner` に匿名化する。会話履歴・persona・private memory・relationship・プレイヤー名は送信しない。
+判断結果は独立したバリデーターで再検証する。未知の操作、対象不足、未許可操作、低体力時の移動、範囲外の追従などは拒否する。
+
+**このAPIは判断の検証用で、ゲーム操作を実行しない。** 応答の `executed` は常に `false`。Forge側も従来どおりネットワークからの空でないactionsを拒否する。
+ゲームとの自動連携時にはForge側のパラメーター検証・実行直前の状態確認・結果通知を追加する。
+
+2026-09-26: Pythonテスト19件が成功。Social Brainへ `PRIVATE_TEST_MARKER_12345` を入れた後も、判断ペイロードや実際に組み立てたAPIリクエストに混入しないことを検証した。
+実モデル `unsloth/gemma-4-26b-a4b-it` で追従・停止・向き変更・低体力時の停止の4ケースを確認し、遅延は約1.5～2.0秒。JEVやクラウドproviderは未実装。
+
 ## Phase 3 — ローカルSocial Brain
 
 現在のMODは `0.0.4`。`!agent chat メッセージ` でローカルLLMと会話できる。`!agent forget` で現在の会話履歴を消す。
@@ -25,7 +53,7 @@ python agent/src/daemon.py --port 8767 --config agent/config.local.json
 環境変数 `MCAI_SOCIAL_API_KEY` でも指定できる。ファイルより環境変数を優先する。詳細と新規clone時の設定は [Agent README](agent/README.md) を参照。
 
 会話履歴はDaemonのメモリ内だけに保持し、直近6往復・約4000文字まで。セッションはワールドへの入場単位とプレイヤーで分離する。再入場やDaemon再起動で以前の会話を引き継がず、最大32セッションを超えると古いものから除去する。
-モデルへ送るのはpersonaと短い会話履歴だけ。ゲーム状態・プレイヤー識別子は送らない。Tactical providerは未実装で、会話データの転送先もない。
+Socialモデルへ送るのはpersonaと短い会話履歴だけ。ゲーム状態・プレイヤー識別子は送らない。Phase 4のTactical providerへ会話データを転送する経路は持たない。
 
 通常会話は `reasoning_effort: none`、生成上限256トークン、API待ち時間30秒。MODの会話待ち時間は50秒。失敗時に自動再試行せず、履歴とゲーム内の動作を変更しない。
 Daemonログにはモデル名・応答時間・入出力サイズ・利用可能なトークン数を記録し、会話本文・キーは出力しない。prefillと生成時間の個別計測は未対応。

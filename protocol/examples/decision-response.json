@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "decision": {"action": "follow", "target": "owner"},
+  "reasonCode": "goal_follow",
+  "executed": false
+}

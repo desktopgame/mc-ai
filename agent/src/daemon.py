@@ -4,6 +4,7 @@ import json
 import logging
 from pathlib import Path
 from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSONA
+from decision import DecisionService, MockDecisionProvider, LocalDecisionProvider, DecisionError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
@@ -68,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, {"version": 1, "error": code})
 
     def do_POST(self):
-        if self.path != "/v1/turn":
+        if self.path not in ("/v1/turn", "/v1/decision"):
             self.error(404, "not_found")
             return
         if self.headers.get_content_type() != "application/json":
@@ -90,7 +91,17 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("incomplete_body")
             payload = json.loads(raw.decode("utf-8"))
-            response = turn(payload, getattr(self.server, "brain", None))
+            if self.path == "/v1/decision":
+                service = getattr(self.server, "decisions", None)
+                if service is None:
+                    raise DecisionError("decision_not_configured")
+                response = service.decide(payload)
+            else:
+                response = turn(payload, getattr(self.server, "brain", None))
+        except DecisionError as exc:
+            LOG.warning("decision failure=%s", str(exc))
+            self.error(503, str(exc))
+            return
         except SocialError as exc:
             LOG.warning("social failure=%s", str(exc))
             self.error(503, str(exc))
@@ -112,6 +123,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--config", type=Path, help="Local SocialProvider JSON config; omitted = ping only")
+    parser.add_argument("--decision-config", type=Path, help="Independent mock or local DecisionProvider config")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     brain = None
@@ -120,8 +132,21 @@ def main():
         if config.get("api_key_file"):
             config["api_key_file"] = str((args.config.resolve().parent / config["api_key_file"]).resolve())
         brain = SocialBrain(LocalSocialProvider(config), config.get("persona", DEFAULT_PERSONA))
+    decisions = None
+    if args.decision_config:
+        config = json.loads(args.decision_config.read_text(encoding="utf-8-sig"))
+        if config.get("api_key_file"):
+            config["api_key_file"] = str((args.decision_config.resolve().parent / config["api_key_file"]).resolve())
+        if config.get("provider") == "mock":
+            provider = MockDecisionProvider()
+        elif config.get("provider") == "local":
+            provider = LocalDecisionProvider(config)
+        else:
+            raise ValueError("unknown decision provider")
+        decisions = DecisionService(provider)
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         server.brain = brain
+        server.decisions = decisions
         LOG.info("Agent Daemon listening on %s:%d (protocol 1, social=%s)", args.host, args.port, brain is not None)
         try:
             server.serve_forever()

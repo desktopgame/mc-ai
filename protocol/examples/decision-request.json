@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "goal": {"type": "follow_owner"},
+  "state": {
+    "companion": {"health": 20, "position": [0, 64, 0]},
+    "owner": {"position": [8, 64, 0]}
+  },
+  "availableActions": ["follow", "stop", "look"]
+}

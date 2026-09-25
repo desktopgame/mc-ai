@@ -32,3 +32,4 @@ forge-mod/run/
 __pycache__/
 *.pyc
 agent/config.local.json
+agent/decision.local.json

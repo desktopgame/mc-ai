@@ -1,4 +1,4 @@
-# Protocol v1 — Phase 1
+# Protocol v1 — Phases 1–4
 
 HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数の `version: 1` を含める。
 
@@ -26,3 +26,25 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 
 応答は既存の `version / say / actions` 形式を維持し、actionsは常に空。pingは従来どおりLLMなしで応答する。
 会話のMOD側読み取りタイムアウトは50秒、Daemonのモデル待ち時間は設定で1～45秒（既定30秒）。プロバイダー未設定・通信失敗・不正出力・処理中は503を返す。自動再試行なし。
+
+## Phase 4 — `POST /v1/decision`
+
+[入力例](examples/decision-request.json)と[出力例](examples/decision-response.json)。既存のturn形式は変更しない。
+
+必須入力:
+
+- `version`: 整数1。
+- `goal.type`: `follow_owner / stop / look_at_owner` のいずれか。自由文は受け渡さない。
+- `state.companion.health`: 有限の0～20。
+- `state.companion.position` と `state.owner.position`: 有限の3要素座標（XZは±30000000、Yは±2048以内）。
+- `availableActions`: `follow / stop / look` の空でない部分集合。未知値・重複を拒否する。
+
+入力から上記フィールドだけを新しいJSONに再構成する。余分なpersona・会話・名前等は捨て、実名はモデルへ渡さない。
+出力は `version / decision / reasonCode / executed`。
+`decision` は `{"action":"stop"}` または `{"action":"follow","target":"owner"}` / `{"action":"look","target":"owner"}`。
+`reasonCode` は `goal_follow / goal_stop / goal_look / owner_near / low_health / owner_out_of_range / unavailable_action` のみ。
+
+体力6以下はstopのみ、followは所有者まで2ブロック超・32ブロック以内のみ。目的と一致しないfollow/look、未許可の操作、余分なパラメーターは拒否する。
+入力不正は400、判断provider未設定・busy・タイムアウト・不正出力は503でdecisionを返さない。
+
+`executed: false` は判断の提案だけであることを示す。ゲームの状態はこの段階では手動fixtureで渡し、状態キャッシュや自動操作には接続しない。
