@@ -10,7 +10,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.3",
+@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.4",
         acceptedMinecraftVersions = "[1.7.10]")
 public final class CompanionMod {
     public static final String MOD_ID = "mcaicompanion";
@@ -35,6 +35,6 @@ public final class CompanionMod {
         PingBridge bridge = new PingBridge(daemonUrl);
         MinecraftForge.EVENT_BUS.register(bridge);
         FMLCommonHandler.instance().bus().register(bridge);
-        LogManager.getLogger(MOD_ID).info("MC AI Companion initialized (Phase 2)");
+        LogManager.getLogger(MOD_ID).info("MC AI Companion initialized (Phase 3)");
     }
 }

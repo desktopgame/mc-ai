@@ -2,9 +2,39 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## Phase 3 — ローカルSocial Brain
+
+現在のMODは `0.0.4`。`!agent chat メッセージ` でローカルLLMと会話できる。`!agent forget` で現在の会話履歴を消す。
+会話から操作指示は生成・実行しない。追従・停止等はPhase 2の手動コマンドを使う。
+
+このPCの設定:
+
+- LM Studio: `http://127.0.0.1:1234/v1`
+- モデル: `unsloth/gemma-4-26b-a4b-it`
+- Daemon: `http://127.0.0.1:8767`
+- ローカル設定: `agent/config.local.json`（Git管理外）
+- APIキー: `.tools/social-api-key.txt`（Git管理外。Daemonのみが読む）
+
+```powershell
+# APIキーの初回保存・変更。非表示で入力し、ローカルファイルへ保存する。
+.\scripts\set-social-api-key.ps1
+# LM Studioで指定モデルをロードし、APIサーバーを開始してから実行する。
+python agent/src/daemon.py --port 8767 --config agent/config.local.json
+```
+
+環境変数 `MCAI_SOCIAL_API_KEY` でも指定できる。ファイルより環境変数を優先する。詳細と新規clone時の設定は [Agent README](agent/README.md) を参照。
+
+会話履歴はDaemonのメモリ内だけに保持し、直近6往復・約4000文字まで。セッションはワールドへの入場単位とプレイヤーで分離する。再入場やDaemon再起動で以前の会話を引き継がず、最大32セッションを超えると古いものから除去する。
+モデルへ送るのはpersonaと短い会話履歴だけ。ゲーム状態・プレイヤー識別子は送らない。Tactical providerは未実装で、会話データの転送先もない。
+
+通常会話は `reasoning_effort: none`、生成上限256トークン、API待ち時間30秒。MODの会話待ち時間は50秒。失敗時に自動再試行せず、履歴とゲーム内の動作を変更しない。
+Daemonログにはモデル名・応答時間・入出力サイズ・利用可能なトークン数を記録し、会話本文・キーは出力しない。prefillと生成時間の個別計測は未対応。
+
+Pythonテスト11件、Javaテスト8件とビルドが成功。2026-09-26、認証付きの指定モデルで実ゲームから日本語の返答と、直前に伝えた好きな色「青」を覚えていることを利用者が確認した。3回のゲーム側RTTは1000 / 1276 / 1275 ms。Phase 3完了。履歴消去・セッション分離・失敗時の履歴保持は自動テストで確認済み（実ゲームでの消去・再入場検証は未実施）。
+
 ## Phase 2 — Companionと基本操作
 
-現在のMODは `0.0.3`。仮のSteve表示と名前付きのCompanionを追加した。LLMは未使用。
+Phase 2（`0.0.3`）で、仮のSteve表示と名前付きのCompanionを追加した。これらの操作はLLMを使わない。
 以下は通常のチャットから入力する手動デバッグコマンドで、Daemonを経由しない。`!agent ping` は従来どおりDaemonへ接続する。
 
 | コマンド | 動作 |
@@ -35,7 +65,7 @@ Phase 1（`0.0.2`）で追加した固定通信はPhase 2でも利用できる�
 
 1. `python agent/src/daemon.py --port 8767` でDaemonを起動する。このPCでは既定の8766が利用できなかったため8767を使用する。
 2. `.\scripts\forge.ps1 build` でビルドする。
-3. Minecraftを終了してから `forge-mod/build/libs/mc-ai-companion-0.0.3.jar` をPrismの `minecraft/mods/` へ入れる。古いjarは削除するか `.jar.disabled` へ改名し、複数バージョンをロードしない。
+3. Minecraftを終了してから `forge-mod/build/libs/mc-ai-companion-0.0.4.jar` をPrismの `minecraft/mods/` へ入れる。古いjarは削除するか `.jar.disabled` へ改名し、複数バージョンをロードしない。
 4. `minecraft/config/mcaicompanion.cfg` を以下に設定する。既定値は `http://127.0.0.1:8766`。今回のPrism検証環境は8767へ設定済み。
 
 ```text
@@ -123,8 +153,8 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-0.0.3.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
-ログ中の `MC AI Companion initialized (Phase 2)` が現在のMODの初期化メッセージ。
+成果物は `forge-mod/build/libs/mc-ai-companion-0.0.4.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
+ログ中の `MC AI Companion initialized (Phase 3)` が現在のMODの初期化メッセージ。
 
 旧ForgeGradleの配布先・Gradle互換性の問題を避けるため、[anatawa12のForgeGradle 1.2修正版](https://github.com/anatawa12/ForgeGradle-1.2)を利用する。バージョンは固定し、動的な `+` 指定は使わない。
 

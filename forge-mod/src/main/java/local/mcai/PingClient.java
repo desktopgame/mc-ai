@@ -11,6 +11,10 @@ public final class PingClient {
     public PingClient(String baseUrl) { this.baseUrl = baseUrl; }
 
     public String ping(String player) throws IOException {
+        return turn(player, "!agent ping", null);
+    }
+
+    public String turn(String player, String text, String session) throws IOException {
         URL url = new URL(baseUrl.replaceAll("/+$", "") + "/v1/turn");
         if (!(url.getProtocol().equals("http") || url.getProtocol().equals("https"))
                 || url.getUserInfo() != null || url.getQuery() != null || url.getRef() != null) {
@@ -18,7 +22,7 @@ public final class PingClient {
         }
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setConnectTimeout(2000);
-        connection.setReadTimeout(3000);
+        connection.setReadTimeout(text.equals("!agent ping") ? 3000 : 50000);
         connection.setInstanceFollowRedirects(false);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -26,10 +30,11 @@ public final class PingClient {
         JsonObject event = new JsonObject();
         event.addProperty("type", "player_chat");
         event.addProperty("player", player);
-        event.addProperty("text", "!agent ping");
+        event.addProperty("text", text);
         JsonObject request = new JsonObject();
         request.addProperty("version", 1);
         request.add("event", event);
+        if (session != null) { request.addProperty("session", session); }
         byte[] payload = request.toString().getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(payload.length);
         try {
@@ -59,7 +64,7 @@ public final class PingClient {
                     || say == null || !say.isString() || say.getAsString().length() > 512
                     || !reply.has("actions") || !reply.get("actions").isJsonArray()
                     || reply.getAsJsonArray("actions").size() != 0) {
-                throw new IOException("Invalid phase 1 response");
+                throw new IOException("Invalid daemon response");
             }
             return say.getAsString();
         } catch (RuntimeException error) {

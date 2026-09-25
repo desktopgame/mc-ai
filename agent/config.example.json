@@ -1,0 +1,8 @@
+{
+  "base_url": "http://127.0.0.1:1234/v1",
+  "model": "REPLACE_WITH_LOADED_MODEL_ID",
+  "timeout_seconds": 30,
+  "max_tokens": 256,
+  "reasoning_effort": "none",
+  "api_key_env": "MCAI_SOCIAL_API_KEY"
+}

@@ -15,7 +15,8 @@ import java.util.Locale;
 public final class CompanionCommands {
     @SubscribeEvent public void onChat(ServerChatEvent event) {
         String input = event.message.trim();
-        if (!(input.equals("!agent") || input.startsWith("!agent ")) || input.equals("!agent ping")) { return; }
+        if (!(input.equals("!agent") || input.startsWith("!agent ")) || input.equals("!agent ping")
+                || input.equals("!agent chat") || input.startsWith("!agent chat ") || input.equals("!agent forget")) { return; }
         event.setCanceled(true);
         try {
             DebugCommand command = DebugCommand.parse(input);
@@ -28,7 +29,7 @@ public final class CompanionCommands {
 
     private void execute(EntityPlayerMP player, DebugCommand command) {
         if (command.type.equals("help")) {
-            reply(player, "!agent spawn / follow / stop / look / say メッセージ / status / ping");
+            reply(player, "!agent spawn / follow / stop / look / say メッセージ / status / ping / chat メッセージ / forget");
             return;
         }
         CompanionEntity companion = find(player);

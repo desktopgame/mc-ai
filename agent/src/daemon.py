@@ -1,14 +1,16 @@
-"""Phase 1 daemon. Python standard library only; no model or game dependency."""
+"""Agent Daemon: fixed ping plus optional local Social Brain."""
 import argparse
 import json
 import logging
+from pathlib import Path
+from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSONA
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
 MAX_BODY = 8192
 
 
-def turn(payload):
+def turn(payload, brain=None):
     if not isinstance(payload, dict) or type(payload.get("version")) is not int or payload["version"] != 1:
         raise ValueError("unsupported_version")
     event = payload.get("event")
@@ -17,11 +19,27 @@ def turn(payload):
     player = event.get("player")
     if not isinstance(player, str) or not 1 <= len(player) <= 64:
         raise ValueError("invalid_player")
-    if event.get("text") != "!agent ping":
-        raise ValueError("unsupported_message")
     if "state" in payload and not isinstance(payload["state"], dict):
         raise ValueError("invalid_state")
-    return {"version": 1, "say": "pong", "actions": []}
+    text = event.get("text")
+    if text == "!agent ping":
+        return {"version": 1, "say": "pong", "actions": []}
+    if not isinstance(text, str) or not (text.startswith("!agent chat ") or text == "!agent forget"):
+        raise ValueError("unsupported_message")
+    session = payload.get("session")
+    if not isinstance(session, str) or not 1 <= len(session) <= 128:
+        raise ValueError("invalid_session")
+    message = text[len("!agent chat "):].strip()
+    if text != "!agent forget" and (not message or len(message) > 512):
+        raise ValueError("invalid_message")
+    if brain is None:
+        raise SocialError("social_not_configured")
+    if text == "!agent forget":
+        brain.forget((session, player))
+        reply = "この会話の履歴を消しました。"
+    else:
+        reply = brain.chat((session, player), message)
+    return {"version": 1, "say": reply, "actions": []}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -39,7 +57,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except ConnectionError:
+            LOG.info("response client_disconnected")
+            return
         LOG.info("response status=%d bytes=%d", status, len(body))
 
     def error(self, status, code):
@@ -68,7 +90,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("incomplete_body")
             payload = json.loads(raw.decode("utf-8"))
-            response = turn(payload)
+            response = turn(payload, getattr(self.server, "brain", None))
+        except SocialError as exc:
+            LOG.warning("social failure=%s", str(exc))
+            self.error(503, str(exc))
+            return
         except (ValueError, UnicodeError, RecursionError):
             self.error(400, "invalid_request")
             return
@@ -85,10 +111,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--config", type=Path, help="Local SocialProvider JSON config; omitted = ping only")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    brain = None
+    if args.config:
+        config = json.loads(args.config.read_text(encoding="utf-8-sig"))
+        if config.get("api_key_file"):
+            config["api_key_file"] = str((args.config.resolve().parent / config["api_key_file"]).resolve())
+        brain = SocialBrain(LocalSocialProvider(config), config.get("persona", DEFAULT_PERSONA))
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
-        LOG.info("Agent Daemon listening on %s:%d (protocol 1, fixed ping/pong)", args.host, args.port)
+        server.brain = brain
+        LOG.info("Agent Daemon listening on %s:%d (protocol 1, social=%s)", args.host, args.port, brain is not None)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

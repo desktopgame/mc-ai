@@ -31,3 +31,4 @@ forge-mod/run/
 !forge-mod/gradle/wrapper/gradle-wrapper.jar
 __pycache__/
 *.pyc
+agent/config.local.json

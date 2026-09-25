@@ -17,3 +17,12 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 `spawn / follow / stop / look / say / status` はForge内のデバッグ用コマンド。HTTPのaction schemaを拡張するものではない。
 ネットワーク経由の `actions` は引き続き空配列だけを許可する。手動コマンドは入力をallowlistで検証し、所有者のCompanionにだけ適用する。
 状態取得は現在 `!agent status` で確認し、Daemonへの状態同期やaction result通知は後続フェーズで追加する。
+
+## Phase 3の会話
+
+同じ `POST /v1/turn` に `event.text: "!agent chat メッセージ"` と `session`（1～128文字）を送る。
+`session` はMinecraftのワールド入場単位に生成したランダムID。Daemonはsessionとplayerの組で履歴を分離し、その識別子はLLMへ送らない。
+`!agent forget` は同じ組の履歴を消去する。会話本文は空白除去後1～512文字。
+
+応答は既存の `version / say / actions` 形式を維持し、actionsは常に空。pingは従来どおりLLMなしで応答する。
+会話のMOD側読み取りタイムアウトは50秒、Daemonのモデル待ち時間は設定で1～45秒（既定30秒）。プロバイダー未設定・通信失敗・不正出力・処理中は503を返す。自動再試行なし。
