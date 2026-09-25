@@ -2,8 +2,8 @@
   {
     "modid": "mcaicompanion",
     "name": "MC AI Companion",
-    "description": "Phase 1: HTTP ping/pong with an external Agent Daemon.",
-    "version": "0.0.2",
+    "description": "Phase 2: Companion entity and manual actions, plus daemon ping/pong.",
+    "version": "0.0.3",
     "mcversion": "1.7.10",
     "authorList": [],
     "dependencies": []

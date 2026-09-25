@@ -11,3 +11,9 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 - 切断済みプレイヤーや以前のワールドセッションに対する応答は表示しない。
 
 将来のaction実装時には、Daemon側とForge側の両方にallowlistとパラメーター検証を追加する。この段階で未実装のactionを許可しない。
+
+## Phase 2の手動操作との関係
+
+`spawn / follow / stop / look / say / status` はForge内のデバッグ用コマンド。HTTPのaction schemaを拡張するものではない。
+ネットワーク経由の `actions` は引き続き空配列だけを許可する。手動コマンドは入力をallowlistで検証し、所有者のCompanionにだけ適用する。
+状態取得は現在 `!agent status` で確認し、Daemonへの状態同期やaction result通知は後続フェーズで追加する。
