@@ -2,6 +2,10 @@
 
 ## 最初に読むもの
 
+次の増分 `collect_block` の実装指示書は [protocol/collect-block.md](protocol/collect-block.md)。**文書のみ作成済み・コード未実装**。
+MVPは `minecraft:log`、採掘数ではなく新規回収数で成功判定し、既存のmine_target/pickup_targetを同じSkill内で順序づける。
+詳細な台帳変更・取消・回収待ち・テストと初期スコープは同書を参照。
+
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17）。
 Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済み**（MOD 0.0.18）。
