@@ -397,11 +397,6 @@ public final class ActionBridge {
                             && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
                     return;
                 }
-                if (!blockReachable(companion, action.targetRef)) {
-                    if (enqueueSkillResult(action.actionId, action.sequence, "failed", "blocked", "block", action.block, 0)
-                            && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "blocked", 0); }
-                    return;
-                }
             } else {
                 EntityItem target = findTarget(companion, action.targetRef, action.item);
                 if (target == null) {
@@ -533,7 +528,12 @@ public final class ActionBridge {
         catch (NumberFormatException error) { return null; }
     }
 
-    /** The fixed mine target must still be the expected block within observation range. */
+    /**
+     * The fixed mine target must still be the expected block within observation range.
+     * Obstruction is NOT checked here: at claim time the companion can be far away, and a target behind a
+     * walk-aroundable wall would be wrongly rejected. MineTargetTask owns the reachability check once it
+     * has moved within mining range.
+     */
     private boolean blockMatches(CompanionEntity companion, String targetRef, String blockName) {
         int[] pos = blockPosition(targetRef);
         if (pos == null) { return false; }
@@ -543,14 +543,6 @@ public final class ActionBridge {
         Object name = Block.blockRegistry.getNameForObject(block);
         if (name == null || !name.toString().equals(blockName)) { return false; }
         return companion.getDistanceSq(pos[0] + 0.5D, pos[1] + 0.5D, pos[2] + 0.5D) <= CompanionEntity.ITEM_RANGE_SQUARED;
-    }
-
-    /** Direct physical access to the target block: not covered by glass/stone/wood/ore, leaves allowed. */
-    private boolean blockReachable(CompanionEntity companion, String targetRef) {
-        int[] pos = blockPosition(targetRef);
-        if (pos == null) { return false; }
-        return MineObstruction.accessible(companion.worldObj, companion.posX,
-                companion.posY + companion.getEyeHeight(), companion.posZ, pos[0], pos[1], pos[2]);
     }
 
     private void result(String status, String reason) {
