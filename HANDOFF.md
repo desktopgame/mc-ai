@@ -2,16 +2,18 @@
 
 ## 最初に読むもの
 
-次の増分 `collect_block` の実装指示書は [protocol/collect-block.md](protocol/collect-block.md)。**文書のみ作成済み・コード未実装**。
+次の増分「Skill終端結果を既存Socialで発話する共通機構」の実装指示書は [protocol/skill-terminal-social.md](protocol/skill-terminal-social.md)。**文書のみ作成済み・コード未実装**。調査基点は `develop` / `c5bdd36`。
+終端snapshot、取消後の通知回収、会話キュー共有、表現選択、固定fallback、dedupe、実表示後の履歴登録を定義している。
+
+`collect_block` は **Daemon・Forgeとも実装済み（MOD 0.0.22）**。仕様と既存の検証記録は [protocol/collect-block.md](protocol/collect-block.md)。
 MVPは `minecraft:log`、採掘数ではなく新規回収数で成功判定し、既存のmine_target/pickup_targetを同じSkill内で順序づける。
-詳細な台帳変更・取消・回収待ち・テストと初期スコープは同書を参照。
 
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17）。
 Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済み**（MOD 0.0.18）。
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
-入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
+入口は `!agent do collect_drop <アイテム> <個数>`、`!agent do mine <ブロック>`、`!agent do collect_block minecraft:log <個数>`、v2 typed protocol。Planner・自然文からのSkill引数抽出は範囲外。
 自動テストはPython 118件・Java 74件。基本の収集・mine・collect_block（実ゲーム）を確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
