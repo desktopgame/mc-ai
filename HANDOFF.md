@@ -2,6 +2,22 @@
 
 ## 現在地
 
+### コンテキスト予算 — Daemon / 2026-09-26
+
+`agent/src/context_budget.py` にSocial/Decision独立のコンテキスト・入力・出力予算、Socialの履歴予算を実装。
+履歴の固定6往復/4000文字を廃止し、古い往復から削って入力全体と履歴の両予算を満たす。system・今回の発話・schemaだけで超過ならモデルを呼ばず422。
+provider直呼び出しにも予算チェックを適用。非同期goalはfailedと固定エラー理由を記録する。失敗時に会話履歴は更新しない。
+計数はUTF-8バイト数と枠の余裕による推定で、正確なtokenizerは未導入。`TokenCounter` 注入で後から差し替え可能。
+詳細・既定値・旧max_tokensとの互換は `agent/README.md` の「コンテキスト予算」を参照。
+
+LM Studioのロード済みcontextLengthは65,536（理論最大262,144とは異なる）。Git管理外の両設定をcontext65,536・output256・margin512へ更新。
+Social入力8,192/履歴4,096、Decision入力4,096。キー設定は維持した。
+自動テスト50件成功。実モデルでSocialのfollow_ownerとDecisionのfollow生成成功。検証は独立したproviderインスタンスで行い、ゲームにはactionを送っていない。
+HTTPテストのHTTPConnectionをclosingで閉じるよう修正。既存のHTTPエラーテストが一度Windowsの接続切断エラーとなったが、再実行では全件成功。
+
+常駐Daemonはこの変更では再起動していないため、新設定の反映には再起動が必要。MODは変更なし・jar差し替え不要。
+以下の0.0.8は引き続きPrism未配置、インストール済みは0.0.7。新しい予算超過理由のゲーム内専用表示は未実装で、API/ログに理由を残す。
+
 ### 通信Executorへの整理 — MOD 0.0.8
 
 リクエストごとの `new Thread` を `IoExecutors` に置き換えた。会話・観測・行動制御・結果通知の4系統を独立させ、各1worker・待機1件に制限。

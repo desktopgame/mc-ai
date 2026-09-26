@@ -1,5 +1,35 @@
 # Agent Daemon — Action lifecycle
 
+## コンテキスト予算
+
+SocialとDecisionはそれぞれの設定ファイルに予算を持つ。実モデル用の例は `config.example.json` と `decision.local.example.json`。
+`context_window_tokens` にはモデルの理論上の最大長ではなく、サーバーで実際にロードしたコンテキスト長を指定する。自動検出はしない。
+
+| 設定 | 意味・省略時 |
+| --- | --- |
+| `context_window_tokens` | コンテキスト上限。互換用の既定値8,192。利用環境に合わせて明示する |
+| `max_output_tokens` | 出力の予約・生成上限。既定256、1～1,024 |
+| `safety_margin_tokens` | テンプレート等への余裕。既定512、0以上 |
+| `prompt_budget_tokens` | 入力全体の運用上限。既定はSocial8,192、Decision4,096と残り容量の小さい方 |
+| `history_budget_tokens` | Socialの履歴上限。既定は4,096と入力予算の小さい方。0なら履歴なし。Decisionは0のみ |
+
+`prompt_budget_tokens <= context_window_tokens - max_output_tokens - safety_margin_tokens` を起動時に検証する。
+履歴予算は入力予算以内でなければならない。旧 `max_tokens` は出力上限の別名として引き続き使えるが、新旧を異なる値で指定すると起動を拒否する。
+APIへ送る生成上限のフィールド名は従来どおり `max_tokens`。
+
+入力にはsystem・履歴・今回の発話・構造化出力schemaを含める。古いuser/assistantの往復から取り除き、履歴上限と入力全体の上限を両方満たす。
+systemや今回の発話は切り詰めず、それだけで収まらなければモデルを呼ばない。失敗時は保存済み履歴も更新しない。
+要約・長期記憶は追加しない。大きなコンテキストは上限であり、情報を追加して埋める目標にはしない。
+
+現状の計数は `utf8_estimate`：JSON化した入力のUTF-8バイト数にメッセージ枠の余裕を足す保守的な推定。
+日本語を一律「4文字=1token」として扱わない。モデル固有tokenizerは未導入で、任意のサーバーテンプレートに対する厳密な保証ではない。
+将来は `TokenCounter` をproviderへ注入できる。正確に数える実装にはchat templateとschemaも含める必要がある。
+ログには推定方式・推定量・予算・残した往復数を記録し、発話本文やキーは出さない。
+
+超過時はHTTP 422と `mandatory_prompt_exceeds_budget` または `prompt_budget_exceeded` を返す。
+非同期goalではfailedと同じエラー理由を記録する。現行MODではエラーは一般的な失敗表示となり、詳細はDaemonのログ/APIで確認する。
+設定変更後はDaemonを再起動する。
+
 MOD 0.0.7では会話リクエストの `acceptIntent: true` に対応し、Socialモデルから構造化された返答と限定intentを受け取る。
 指定モデル・接続先・キー設定の変更は不要。intentの内容はゲーム側が受付順を確認して既存のGoal Managerへ送る。
 Socialの会話履歴をTacticalへ渡す経路は追加しない。詳細は [会話からの指示](../protocol/action-lifecycle.md#会話からの指示--007)。
@@ -51,12 +81,12 @@ python agent/src/daemon.py --port 8767 --config agent/config.local.json --decisi
 ```
 
 `POST /v1/decision` は各回2メッセージ（固定systemと匿名化されたゲーム目的・状態）だけを送る。
-会話・判断履歴は保持せず、自然言語のreasoningも要求しない。`response_format: json_schema`、`reasoning_effort: none`、256トークン、temperature 0を指定する。
+会話・判断履歴は保持せず、自然言語のreasoningも要求しない。`response_format: json_schema`、`reasoning_effort: none`、設定した出力上限（既定256）、temperature 0を指定する。
 生成結果はサーバーのschema保証に依存せずDaemonでも検証する。タイムアウト・不正出力時は503で、操作も自動再試行も行わない。
 JSON schemaをサポートするローカルサーバーが必要。[LM Studioの仕様](https://lmstudio.ai/docs/developer/openai-compat/structured-output)。
 
 ログはprovider・model・入出力サイズ・遅延・action・固定reasonCodeだけで、入力JSON本文やキーは出さない。
-テストは `python -m unittest discover -s agent/tests -v`。26件で会話と判断の分離、観測の同期、HTTP、出力検証、失敗系を確認する。
+テストは `python -m unittest discover -s agent/tests -v`。会話と判断の分離、観測の同期、HTTP、出力検証、予算と失敗系を確認する。
 
 ## ローカルLLMとAPIキー
 
@@ -80,7 +110,7 @@ python agent/src/daemon.py --port 8767 --config agent/config.local.json
 指定Gemmaモデルは既定の思考生成では256トークンで返答が完了しなかったため、`none` で実測確認した。
 [LM Studioの対応について](https://lmstudio.ai/changelog/lmstudio/lmstudio-v0.4.8)。
 
-履歴はメモリ内のみ。セッション別に直近6往復・約4000文字まで、最大32セッション。
+履歴はメモリ内のみ。上記の予算に収まる直近の往復を保持し、最大32セッション。
 不正・空・長すぎる・生成途中の出力は拒否する。`reasoning_content` やtool callをゲームへ送らず、`actions` は常に空。
 タイムアウト・認証失敗・モデル未ロード等はHTTP 503として返し、ゲーム操作や会話履歴を更新しない。
 

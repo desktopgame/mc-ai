@@ -1,5 +1,13 @@
 # Protocol v1
 
+## コンテキスト予算超過
+
+`/v1/turn` と検証用 `/v1/decision` は、モデルへの入力予算超過時にHTTP 422を返す。
+形式は `{"version":1,"error":"mandatory_prompt_exceeds_budget"}`（Socialの必須入力だけで超過）、
+または `{"version":1,"error":"prompt_budget_exceeded"}`（providerで超過）。モデル呼び出し・会話履歴更新は行わない。
+非同期 `/v1/goal` の判断中の超過はgoalの `status: failed` と同名の `error` で通知し、actionを発行しない。
+設定と推定方式は [Agent README](../agent/README.md#コンテキスト予算) を参照。
+
 MOD 0.0.6の実行用APIは [行動ライフサイクル](action-lifecycle.md) を参照。
 既存のturn/decisionの意味は変更しない。以下はPhases 1～5のAPIと実装時点の記録。
 

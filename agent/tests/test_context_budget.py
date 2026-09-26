@@ -3,6 +3,7 @@ import json
 import sys
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
@@ -130,7 +131,7 @@ class BudgetTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler); server.brain = brain
         worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
         try:
-            with HTTPConnection(*server.server_address, timeout=2) as conn:
+            with closing(HTTPConnection(*server.server_address, timeout=2)) as conn:
                 conn.request("POST", "/v1/turn", json.dumps({"version": 1, "session": "s", "event": {
                     "type": "player_chat", "player": "p", "text": "!agent chat hello"}}), {"Content-Type": "application/json"})
                 response = conn.getresponse(); body = json.loads(response.read())

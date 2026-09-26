@@ -2,6 +2,12 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## コンテキスト予算 — Daemon
+
+SocialとDecisionそれぞれにコンテキスト長・出力上限・入力予算を設定できる。Socialには独立した履歴予算も持たせ、古い往復から削除する。
+systemと今回の発話だけで上限を超える場合は、モデルへ送信せず理由を返す。現在の計数はUTF-8ベースの保守的な推定。
+設定項目・既定値・制約は [Agent README](agent/README.md#コンテキスト予算) を参照。MODの変更は不要。
+
 ## 通信Executor — 0.0.8
 
 リクエストごとのスレッド生成をやめ、会話・観測・行動制御・結果通知に独立した単一スレッドの `ThreadPoolExecutor` を割り当てた。
