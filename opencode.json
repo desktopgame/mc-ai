@@ -1,0 +1,67 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*secrets/*": "deny",
+      "*social-api-key*": "deny"
+    },
+    "edit": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*secrets/*": "deny",
+      "*social-api-key*": "deny"
+    },
+    "webfetch": "ask",
+    "bash": {
+      "*": "ask",
+
+      "mkdir -p *": "allow",
+      "unzip -l *": "allow",
+      "unzip -p *": "allow",
+      "iconv *": "allow",
+      "netstat *": "allow",
+      "sha256sum *": "allow",
+
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git branch*": "allow",
+      "git add *": "allow",
+      "git commit *": "allow",
+
+      "uv format *": "allow",
+      "uvx ruff *": "allow",
+
+      "Get-FileHash *": "allow",
+      "Get-Process *": "allow",
+      "Get-CimInstance *": "allow",
+      "Get-NetTCPConnection *": "allow",
+      "Get-Content *": "allow",
+      "Select-String *": "allow",
+
+      "./scripts/forge.ps1 build*": "allow",
+      ".\\scripts\\forge.ps1 build*": "allow",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/forge.ps1 build*": "allow",
+      "./scripts/restart-daemon.ps1*": "allow",
+      ".\\scripts\\restart-daemon.ps1*": "allow",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/restart-daemon.ps1*": "allow",
+      "./scripts/deploy-mod.ps1 *": "allow",
+      ".\\scripts\\deploy-mod.ps1 *": "allow",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/deploy-mod.ps1 *": "allow",
+
+      "git push*": "ask",
+      "git pull*": "ask",
+      "uv run *": "ask",
+      "rm -rf*": "ask",
+      "* rm -rf *": "ask",
+      "git reset --hard*": "ask",
+      "git clean *": "ask",
+      "*social-api-key*": "ask"
+    }
+  }
+}
