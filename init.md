@@ -1,5 +1,7 @@
 # Minecraft 1.7.10 Local AI Companion — init.md
 
+> この文書は将来構想を含む全体設計です。現行v0.1.0の実装範囲は [README](README.md)、既知の問題は [knwon_issue.md](knwon_issue.md) を参照してください。
+
 ## このファイルの役割
 
 このファイルは、このリポジトリを実装するAIエージェント向けの初期仕様である。

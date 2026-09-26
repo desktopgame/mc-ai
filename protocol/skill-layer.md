@@ -1,4 +1,6 @@
-# Skill Layer MVP 実装仕様 — collect_drop
+# Skill Layer — collect_drop — v0.1.0
+
+> 現行版に実装済み。以下の0.0.x・段階別の件数は導入時の記録。最新の確認範囲は [リリース記録](../RELEASE_NOTES.md)、残課題は [既知の問題](../knwon_issue.md) を参照。設計上の受入条件をすべて実機検証済みとするものではない。
 
 状態: **MVP実装済み（MOD 0.0.12 / Daemon v2）。** 2026-09-26、調査基点 `d032115`（MOD 0.0.11）に実装。
 利用者の「Skill Layer: 実装仕様化依頼」27項目を前提とする。[元のアイデア](../mod-idea/skill.md)は背景資料、本書をMVPの実装契約とする。
@@ -131,7 +133,7 @@ epoch不一致は409 `daemon_restarted`、Skill未知は409 `unknown_skill`。�
 }
 ```
 
-constraintsは受理後必ず空配列へ正規化。goalはこのobject、既存の単発goal文字列、または取消を表すnullのunion。
+constraintsは受理後必ず空配列へ正規化。v2 goalは対応Skillのobject、または取消を表すnull。既存の単発goal文字列は legacy_goal_unsupported で拒否する。
 collect_dropのgoal objectのJSON Schemaは以下。HTTP envelopeは第5節の必須5キーのみを許可し、全フィールド必須とする。
 
 ```json
@@ -154,7 +156,7 @@ collect_dropのgoal objectのJSON Schemaは以下。HTTP envelopeは第5節の�
 ```
 
 これは実行受付のschemaであり、現在のモデルサーバーに新しいschema機能を要求するものではない。
-既存文字列は `follow_owner/stop/look_at_owner/pickup_item/deposit_items` のみ。stopはForge即時停止後、goal:nullとして送る。
+既存の `follow_owner/stop/look_at_owner/pickup_item/deposit_items` はv1経路。SkillのstopはForge即時停止後、v2 goal:nullとして送る。
 同じsession/revisionで内容が同じなら同じSkillを返し、新instanceを作らない。内容が異なれば409 `conflicting_goal`。
 小さいrevisionは409 `stale_goal`。大きいrevisionは旧実行の発行権を失効させ、新しい依頼を受理する。
 
@@ -185,7 +187,7 @@ top statusは `idle/thinking/running/completed/failed/cancelled`。thinkingは�
 actionは配送可能な現在の1件、またはnull。running通知受理後はnullとし、Forgeは保持したactionを継続する。
 終端viewはaction:null。Skillなし（idle、既存単発goal）ならskill:null。
 `/v2/skill-status` は同じviewのactionを常にnullにし、元のgoalRevisionを返す。status取得は実行権・leaseを更新しない。
-既存単発goalは旧action objectを `type: legacy_action, payload: <既存ActionProtocol object>` で包むタグ付きunion。旧actionのsucceededをtop completedへ写像する。
+v2 viewはSkill actionのみ。初期案のlegacy_action unionは採用しない。既存単発操作はv1のActionProtocolを使用する。
 各unionの許可キーを別々に検証し、Skill actionを既存のdecision/schemaへ押し込まない。
 
 ### action result
@@ -200,11 +202,11 @@ actionは配送可能な現在の1件、またはnull。running通知受理後�
 ```
 
 statusは `running/succeeded/failed/cancelled`。runningはreason:accepted、count:0。
-全Skill action receiptはitemを必須とし、発行内容と一致、countは0～maxCount。terminalでのみ取得量を確定する。
+collect_dropのpickup receiptはitemを必須とし、発行内容と一致、countは0～maxCount。mineのdestroyed/block receiptとは別schema。混合Skillは発行descriptorで精算する（collect_block仕様参照）。terminalでのみ取得量を確定する。
 応答は `{"version":2,"accepted":true}`。同一terminalの再送は同じACK、数量は二重加算しない。
 同IDで異なるterminal/数量は409 `conflicting_result`。terminal後の遅いrunningはACKして無視。
 未発行ID・別Skill・別session・sequence不一致は409。古いSkillの既知IDはその台帳だけへ反映でき、新Skillへ加算しない。
-legacy actionのresultは別unionとしてskillInstanceId/actionSequence/acquiredを持たず、旧status/reasonを維持する。
+legacy actionのresultはv1 /v1/action-resultへ送り、旧status/reasonを維持する。v2へ混在させない。
 
 v2 request検証失敗は400の固定error (`invalid_request/unsupported_item/unsupported_constraint`)。capacity超過は503 `busy`。
 stale観測による開始拒否は409 `stale_state`。形式拒否にはSkill ID・terminal resultを作らない。

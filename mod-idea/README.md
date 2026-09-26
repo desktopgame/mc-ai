@@ -1,6 +1,5 @@
-ここには決定した仕様ではなく考え中のアイデアが置かれます。
+# アイデア資料
 
-次の実装指示: [collect_block MVP](../protocol/collect-block.md)（文書作成済み・未実装）。
+このディレクトリは設計背景・未確定案です。実装済み機能の一覧は [README](../README.md)、残課題は [既知の問題](../knwon_issue.md) を参照してください。
 
-`skill.md` を具体化した実装仕様は [Skill Layer MVP](../protocol/skill-layer.md) を参照してください。
-`collect_drop(item, count)` の責務・通信・進捗・取消・テストを定義しています。仕様書のみ作成済みで、コードは未実装です。
+[skill.md](skill.md) を具体化した [Skill Layer](../protocol/skill-layer.md)、[collect_block](../protocol/collect-block.md)、[終端Social通知](../protocol/skill-terminal-social.md) はv0.1.0に実装されています。元のアイデア全体を実装済みとする意味ではありません。

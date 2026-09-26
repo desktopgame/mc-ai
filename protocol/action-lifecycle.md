@@ -1,4 +1,6 @@
-# Action lifecycle — MOD 0.0.6 / protocol 1
+# Action lifecycle — v0.1.0
+
+> 現行版に実装済み。以下の0.0.x・段階別の件数は導入時の記録。最新の確認範囲は [リリース記録](../RELEASE_NOTES.md)、残課題は [既知の問題](../knwon_issue.md) を参照。設計上の受入条件をすべて実機検証済みとするものではない。
 
 ## Phase 6の2番目の操作 — deposit（0.0.11）
 
@@ -30,7 +32,7 @@ pickupはtargetを持たない。**どのアイテムを拾うかはモデルで
 - 到達後に9スロットへ入らなければ `inventory_full`。一部だけ入った場合は成功とし、残りは地面に残す。
 - 実行結果の理由に `no_item_in_range / inventory_full` を追加した。経路失敗は既存の `path_not_found` を使う。
 
-Companionのインベントリは9スロットでワールドへ保存し、死亡時は中身を地面へ落とす。所有者への受け渡し（deposit）は未実装。
+Companionのインベントリは9スロットでワールドへ保存し、死亡時は中身を地面へ落とす。所有者への受け渡し（deposit）は別のlegacy操作として実装済み。
 手動確認は `!agent pickup`（Daemonを経由しない）と `!agent do pickup`（AI判断経由）、所持品は `!agent status`。
 
 ## 0.0.8の通信実装

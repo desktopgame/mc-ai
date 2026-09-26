@@ -1,9 +1,22 @@
-# Skill終端結果 → Social発話 — 実装指示書
+# Skill終端結果 → Social発話 — v0.1.0
 
-状態: **Phase 1〜6 実装済み（MOD 0.0.31）。基本動作（terminal発話の一度表示、present→表示→displayed ACK→履歴登録）は実ゲーム確認済み。** 2026-09-26、`develop` / `c5bdd36` を調査。
-実装済み: snapshot schema/validator、PresentationDescriptor/reason辞書、Python/Java共通fixture（fallback＋candidates）、Daemon `TerminalEventStore`/outbox/dedupe/present-ACK台帳（有界・closed digestで再生成防止・presentation生成はfirst-wins）、`/v2/terminal-events`・`/v2/social/skill-terminal`（既存providerで候補ID選択、通常会話と同じconversation履歴を参照〈読むだけ〉、未設定/失敗はfallback）・`/v2/social/terminal-delivery`（**実表示→displayed ACK**の順で通常chat履歴へ1ペア登録、suppressed/重複は登録なし、variant不一致409、forget retirement）、Forge `TerminalDeliveryState`・`TerminalPresentation`（fallback＋candidates）・terminal event取得/identity検証/重複排除・`skill_terminal_social_v1` capability gate・旧Daemon互換、`ConversationQueue` typed entry＋通常会話順序・owner初期化・12秒FIFO例外・forget/退出 fence・CONTROL lane競合時のSkill制御優先、Forgeからの present/表示/displayed・suppressed ACK（SOCIAL lane、sayは自候補と一致時のみ採用、ACK最大2回）。
-未実装/未確認: Daemon epoch変更時の旧作業表示は未実装。Skill終端Social通知の基本動作（一度表示・present/ACK・履歴登録）は実ゲーム確認済み。詳細は HANDOFF を参照。
-以下のAPI・クラス名は、現行と明記したもの以外は追加案である。
+状態: **基本経路とreview-f33f7f5対応を実装済み**。実装基点 `ed1ca65`（旧MOD 0.0.31）、当初設計基点 `c5bdd36`。
+基本の終端発話には過去の実機確認がある。最新の異常系すべての確認済みを意味しない。
+
+以下は実装指示書として作成した**目標契約と受入条件**を維持する。全節を現在の保証と読み替えない。
+現行の導入手順は [README](../README.md)、確認結果は [リリース記録](../RELEASE_NOTES.md)、差分は [既知の問題](../knwon_issue.md) に集約する。
+
+## v0.1.0時点の実装と差分
+
+- snapshot/outbox、既存providerによる3候補選択、共有会話queue、固定fallback、実表示ACKと履歴登録を実装。
+- presentなし/生成中fallback ACK、有界pending ACK、in-flightを含む12秒表示期限、forget時の固定表示、独立cleanupへ修正。
+- Forgeのbindingキーは完全identityへ統一されていない（KI-01）。
+- ACK上限32件と最大2回の送信失敗、履歴lock競合により登録欠落があり得る（KI-02）。
+- epoch変更時の旧作業表示は専用経路未実装（KI-03）。
+- 台帳はexact/digestの有限LRUで、§6.4の連続sequence＋gap方式は未実装。session辞書の長期有界性、overflow表示、HTTP総時間上限にも差分がある（KI-04）。
+- 新APIのresponse bindingやvariantIdと本文の完全照合は受入条件として残る。現行PingClientは主にsay長とmode、PingBridgeは候補本文集合との一致を検査する。
+- 今後の受入テストは§13/14を使う。記載されているだけで検証済みとは扱わない。
+
 既存契約: [Skill Layer](skill-layer.md)、[collect_block](collect-block.md)、[行動ライフサイクル](action-lifecycle.md)、[Agent README](../agent/README.md)。
 
 ## 1. 目的と推奨案

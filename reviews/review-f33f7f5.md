@@ -1,5 +1,7 @@
 # Skill終端Social通知 レビュー
 
+> 指摘時点の記録。5件は後続コミットで修正が入りました。現在の残課題・検証不足は [knwon_issue.md](../knwon_issue.md)、対応内容は [HANDOFF](../HANDOFF.md) を参照。
+
 2026-09-26、`develop` / `f33f7f5`（MOD 0.0.29）。実装指示書と `c5bdd36` 以降の変更を確認。修正は行っていない。
 
 ## 確認結果

@@ -1,4 +1,21 @@
-# Protocol v1
+# Protocol v1 / v2 — v0.1.0
+
+## 現在のAPI索引
+
+MOD v0.1.0はwire protocol v1/v2を併用する。以下のPhases 1～5の説明は導入時の履歴も含む。現在の実行経路はこの表と各仕様を参照。
+
+| protocol | endpoint | 責務 |
+| --- | --- | --- |
+| v1 | `/v1/turn` | ping、会話、forget、限定intent。actions配列は空 |
+| v1 | `/v1/snapshot` / `/v1/events` / `/v1/state` | 上限付き観測同期・状態参照 |
+| v1 | `/v1/decision` | 判断単体の検証。自身では実行しない |
+| v1 | `/v1/goal` / `/v1/action-result` | follow/stop/look/pickup/depositの非同期実行管理 |
+| v2 | `/v2/execution/open` / `/v2/goal` / `/v2/action-result` / `/v2/skill-status` | collect_drop/mine/collect_blockとreceipt精算 |
+| v2 | `/v2/terminal-events` / `/v2/social/skill-terminal` / `/v2/social/terminal-delivery` | 確定終端の取得・表現・表示ACK |
+
+[行動ライフサイクル](action-lifecycle.md)、[Skill Layer](skill-layer.md)、[mine](mine-primitive.md)、[collect_block](collect-block.md)、[終端Social通知](skill-terminal-social.md)。
+v2にlegacy文字列goalを送らない（拒否）。観測にはblocksも含み、item参照は実UUID由来。モデルへのprojectionとは別の層である。
+実装と設計の差分・保存上限は [既知の問題](../knwon_issue.md) を参照。
 
 ## コンテキスト予算超過
 
@@ -17,7 +34,7 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 - [レスポンス例](examples/ping-response.json): `say: "pong"`、`actions: []` を返す。
 - この段階では世界状態を必要としないため送らない。任意の `state` を受け取る場合はobjectに限り、保存・利用しない。
 - 不正な入力は400、未定義の経路は404、Content-Length不足は411、8192バイトを超える本文は413、JSON以外は415を返す。エラー形式は `{"version":1,"error":"invalid_request"}` など。
-- Forge側は応答を8192バイト、`say` を512文字以内に制限する。未知のversion、不正な型、空でないactionsは応答全体を拒否する。操作を実行する機能はまだない。
+- Forge側は応答を8192バイト、`say` を512文字以内に制限する。未知のversion、不正な型、空でないactionsは応答全体を拒否する。このturn応答自体からPrimitiveを実行しない。実行管理はgoal APIを使う。
 - 接続タイムアウト2秒、読み取りタイムアウト3秒。自動再試行なし。ゲームのtickを通信待ちでブロックしない。同時リクエストは1件に制限する。
 - 切断済みプレイヤーや以前のワールドセッションに対する応答は表示しない。
 
@@ -27,7 +44,7 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 
 `spawn / follow / stop / look / say / status` はForge内のデバッグ用コマンド。HTTPのaction schemaを拡張するものではない。
 ネットワーク経由の `actions` は引き続き空配列だけを許可する。手動コマンドは入力をallowlistで検証し、所有者のCompanionにだけ適用する。
-状態取得は現在 `!agent status` で確認し、Daemonへの状態同期やaction result通知は後続フェーズで追加する。
+手動状態確認は `!agent status`。現行では別経路のsnapshot/eventsとaction-resultも実装済み。
 
 ## Phase 3の会話
 
@@ -73,9 +90,9 @@ depositもtargetを持たず、所持品すべてを所有者へ渡す。品物�
 - ACK: `{"version":1,"sequence":0,"synced":true}`。正しいACKまでクライアントの基準状態を進めない。
 - `POST /v1/state`: `{"version":1}` で最後に更新されたセッション、`session` を付けると特定セッションを参照する。
 
-stateはdimension・owner・companion・hostiles・itemsのみ。ownerはposition・health・inventory、companionはid・position・health・task・result・inventory（未読込ならnull）。hostilesとitemsは一時IDからtype・distanceへの辞書。
+stateはdimension・owner・companion・hostiles・items・blocksを含む。ownerはposition・health・inventory、companionはid・position・health・task・result・inventory（未読込ならnull）。hostilesとitemsは一時IDからtype・distanceへの辞書。
 自由文・会話・所有者名・余分なフィールドは拒否する。inventoryはレジストリ名から個数への辞書で、NBTは含まない。hostilesとitemsは各最大16、blocksはtypeごと最大4・合計最大32、inventoryは最大128種類。
-itemsはCompanionから16ブロック以内の落下物で、IDは `item-<entityId>`、distanceは2ブロック刻み。Companion未読込のときは空。
+itemsはCompanionから16ブロック以内の落下物で、IDは `item-<UUID>`、distanceは2ブロック刻み。Companion未読込のときは空。
 
 イベント:
 
