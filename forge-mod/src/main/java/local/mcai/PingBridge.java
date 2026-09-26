@@ -13,6 +13,7 @@ import java.util.UUID;
 public final class PingBridge {
     private final PingClient client;
     private final ActionBridge actions;
+    private final IoExecutors io;
     private final ConversationQueue queue = new ConversationQueue();
     private MinecraftServer server;
     private EntityPlayerMP owner;
@@ -23,7 +24,7 @@ public final class PingBridge {
         final ConversationQueue.Turn turn; final PingClient.Reply reply; final long received = System.nanoTime();
         Completion(ConversationQueue.Turn turn, PingClient.Reply reply) { this.turn = turn; this.reply = reply; }
     }
-    public PingBridge(String url, ActionBridge actions) { client = new PingClient(url); this.actions = actions; }
+    public PingBridge(String url, ActionBridge actions, IoExecutors io) { client = new PingClient(url); this.actions = actions; this.io = io; }
     private void reset(EntityPlayerMP player) {
         queue.reset(); session = UUID.randomUUID().toString(); owner = player;
     }
@@ -69,7 +70,7 @@ public final class PingBridge {
         forgetSession = null;
         final String conversation = session, player = owner.getCommandSenderName();
         inFlight = true;
-        Thread worker = new Thread(new Runnable() {
+        boolean accepted = io.execute(IoExecutors.Lane.SOCIAL, new Runnable() {
             @Override public void run() {
                 PingClient.Reply answer = new PingClient.Reply("応答を取得できませんでした。Daemon・モデル・接続設定を確認してください。", "none");
                 try {
@@ -81,7 +82,12 @@ public final class PingBridge {
                 } catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Social turn failed ({})", e.getClass().getSimpleName()); }
                 finally { completion = new Completion(turn, answer); }
             }
-        }, "mc-ai-social");
-        worker.setDaemon(true); worker.start();
+        });
+        if (!accepted) {
+            inFlight = false;
+            if (cleanup != null) { forgetSession = cleanup; }
+            reply("会話の通信を開始できませんでした。少し待って、もう一度送ってください。");
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Social executor rejected request");
+        }
     }
 }

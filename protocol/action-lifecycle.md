@@ -1,5 +1,15 @@
 # Action lifecycle — MOD 0.0.6 / protocol 1
 
+## 0.0.8の通信実装
+
+HTTP APIとJSONは変更なし。ForgeはSocial・Observation・Control・Resultsの4系統の単一スレッドExecutorをプロセス単位で共有する。
+各系統は最大1worker＋Executor内キュー1件、inFlight制限と既存のアプリケーション側キュー上限も維持する。
+同一系統の完了通知とworkerの復帰が重なる場合のためにキュー1件を許すが、無制限にタスクを蓄積しない。
+満杯・終了済みExecutorは即時拒否し、Socialは利用者へ失敗を通知、Observationは再同期、Controlは停止、Resultsは既存の有界再試行へ接続する。
+CallerRunsPolicyは使わず、ゲームスレッドで通信しない。即時停止はExecutorを経由しない。
+idle workerは30秒で終了し、次回の必要時に再生成する。JVM shutdown hookが全系統をshutdownNowする。
+ワールド退出時に新たなプールを作り直さず、旧HTTPの終了待ちを同じ系統に限定する。旧結果は従来のsession/世代チェックで無効化する。
+
 ## 会話からの指示 — 0.0.7
 
 `POST /v1/turn` の会話リクエストへ `acceptIntent: true` を指定すると、応答に `intent` を追加する。

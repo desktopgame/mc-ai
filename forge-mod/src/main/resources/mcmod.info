@@ -3,7 +3,7 @@
     "modid": "mcaicompanion",
     "name": "MC AI Companion",
     "description": "Phase 5: State snapshots, observation events and daemon state cache.",
-    "version": "0.0.7",
+    "version": "0.0.8",
     "mcversion": "1.7.10",
     "authorList": [],
     "dependencies": []

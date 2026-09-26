@@ -10,7 +10,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.7",
+@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.8",
         acceptedMinecraftVersions = "[1.7.10]")
 public final class CompanionMod {
     public static final String MOD_ID = "mcaicompanion";
@@ -31,11 +31,16 @@ public final class CompanionMod {
     public void init(FMLInitializationEvent event) {
         EntityRegistry.registerModEntity(CompanionEntity.class, "Companion", 0, this, 80, 3, true);
         proxy.registerRenderers();
-        ObservationBridge observations = new ObservationBridge(daemonUrl);
-        ActionBridge actions = new ActionBridge(daemonUrl, observations);
+        final IoExecutors io = new IoExecutors();
+        // Process lifetime, not per-world: a slow old HTTP call must not create another pool on rejoin.
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override public void run() { io.close(); }
+        }, "mc-ai-io-shutdown"));
+        ObservationBridge observations = new ObservationBridge(daemonUrl, io);
+        ActionBridge actions = new ActionBridge(daemonUrl, observations, io);
         MinecraftForge.EVENT_BUS.register(new CompanionCommands(actions));
         MinecraftForge.EVENT_BUS.register(actions);
-        PingBridge bridge = new PingBridge(daemonUrl, actions);
+        PingBridge bridge = new PingBridge(daemonUrl, actions, io);
         MinecraftForge.EVENT_BUS.register(bridge);
         FMLCommonHandler.instance().bus().register(bridge);
         FMLCommonHandler.instance().bus().register(observations);

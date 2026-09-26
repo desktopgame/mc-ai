@@ -20,6 +20,7 @@ import java.util.*;
 /** Observations are captured on the server thread; the worker receives JSON only. */
 public final class ObservationBridge {
     private final String baseUrl;
+    private final IoExecutors io;
     private MinecraftServer server;
     private String session = UUID.randomUUID().toString();
     private String ownerId = "";
@@ -30,7 +31,7 @@ public final class ObservationBridge {
     private boolean inFlight;
     private volatile Completion completion;
 
-    public ObservationBridge(String url) { baseUrl = url; }
+    public ObservationBridge(String url, IoExecutors io) { baseUrl = url; this.io = io; }
 
     /** Called only on the game thread. No action may use an unacknowledged session. */
     public String actionSession(EntityPlayerMP player) {
@@ -82,7 +83,7 @@ public final class ObservationBridge {
         envelope.add(diff.snapshot ? "state" : "events", diff.snapshot ? diff.state : diff.events);
         final String body = envelope.toString();
         inFlight = true;
-        Thread worker = new Thread(new Runnable() {
+        boolean accepted = io.execute(IoExecutors.Lane.OBSERVATION, new Runnable() {
             @Override public void run() {
                 boolean ok = false;
                 try {
@@ -96,8 +97,11 @@ public final class ObservationBridge {
                     LogManager.getLogger(CompanionMod.MOD_ID).warn("Observation sync failed ({}); resync after 5s", error.getClass().getSimpleName());
                 } finally { completion = new Completion(sentSession, diff, sentSequence, ok); }
             }
-        }, "mc-ai-observation");
-        worker.setDaemon(true); worker.start();
+        });
+        if (!accepted) {
+            completion = new Completion(sentSession, diff, sentSequence, false);
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Observation executor rejected request");
+        }
     }
 
     private void send(String path, String body, int expectedSequence) throws IOException {

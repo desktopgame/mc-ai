@@ -16,6 +16,7 @@ import java.util.Objects;
 public final class ActionBridge {
     private final DaemonClient client;
     private final ObservationBridge observations;
+    private final IoExecutors io;
     private final GoalState state = new GoalState();
     private final IntentOrder intentOrder = new IntentOrder();
     private EntityPlayerMP owner;
@@ -44,8 +45,8 @@ public final class ActionBridge {
         ResultCompletion(ResultJob job, boolean ok) { this.job = job; this.ok = ok; }
     }
 
-    public ActionBridge(String url, ObservationBridge observations) {
-        client = new DaemonClient(url); this.observations = observations;
+    public ActionBridge(String url, ObservationBridge observations, IoExecutors io) {
+        client = new DaemonClient(url); this.observations = observations; this.io = io;
     }
     private void reply(String text) { if (owner != null) { owner.addChatMessage(new ChatComponentText("[Companion] " + text)); } }
     private JsonObject envelope(String session, int revision) {
@@ -212,15 +213,18 @@ public final class ActionBridge {
         final JsonObject body = envelope(session, revision);
         body.add("goal", state.goal == null ? JsonNull.INSTANCE : new JsonPrimitive(state.goal));
         inFlight = true; nextPoll = System.nanoTime() + 1000000000L;
-        Thread worker = new Thread(new Runnable() {
+        boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
             @Override public void run() {
                 JsonObject response = null;
                 try { response = client.post("/v1/goal", body); }
                 catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Goal control unavailable ({})", e.getClass().getSimpleName()); }
                 finally { completion = new Completion(session, revision, response); }
             }
-        }, "mc-ai-control");
-        worker.setDaemon(true); worker.start();
+        });
+        if (!accepted) {
+            completion = new Completion(session, revision, null);
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Control executor rejected request");
+        }
     }
 
     private void sendResults() {
@@ -239,7 +243,7 @@ public final class ActionBridge {
         }
         if (resultInFlight || results.isEmpty() || System.nanoTime() < results.peek().retryAt) { return; }
         final ResultJob job = results.peek(); resultInFlight = true;
-        Thread worker = new Thread(new Runnable() {
+        boolean accepted = io.execute(IoExecutors.Lane.RESULTS, new Runnable() {
             @Override public void run() {
                 boolean ok = false;
                 try {
@@ -253,7 +257,10 @@ public final class ActionBridge {
                 } catch (Exception e) { /* Bounded retries; never re-execute the action. */ }
                 finally { resultCompletion = new ResultCompletion(job, ok); }
             }
-        }, "mc-ai-results");
-        worker.setDaemon(true); worker.start();
+        });
+        if (!accepted) {
+            resultCompletion = new ResultCompletion(job, false);
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Result executor rejected request");
+        }
     }
 }
