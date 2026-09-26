@@ -5,7 +5,7 @@
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と v2 typed protocol。Planner・採掘・自然文からの引数抽出は範囲外。
-自動テストはPython 73件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
+自動テストはPython 76件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -19,15 +19,14 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layerを実装（本ドキュメント更新前は未コミット） |
 | MODバージョン | `0.0.12`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理） |
-| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `310CE06B6E7361E8B9C8DEA90158C617D97CC0E5A313DB92917AE10682AB8713`）。0.0.11は `.disabled` |
-| Daemon | PID `42412` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（0.0.12相当） |
+| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`）。0.0.11は `.disabled` |
+| Daemon | PID `40924` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（lease/receipt追加反映後の0.0.12相当、`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
 | 自動テスト | Python **71件**・Java **40件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映待ちがある。** レビュー指摘の修正と `/local/shutdown` がソースにあるため、ゲーム終了後に `.\scripts\restart-daemon.ps1` と `deploy-mod.ps1 -Version 0.0.12` を行う。
-現在稼働中のPID `42412` は `/local/shutdown` 実装前のため、**今回の入れ替えだけ**管理者シェル（またはタスクマネージャ）で停止する必要がある。以後は通常権限で良い。
+**反映済み。** MOD・Daemon・ドキュメントは同じ世代（レビュー3点＋control lease反映）。次は実機で `!agent do collect_drop` を確認するだけ。
 
 ## 実装済みの機能
 
@@ -47,6 +46,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
   入口は `!agent do collect_drop <アイテム> <個数>`。allowlistは log/cobblestone/iron_ingot/planks/stick、count 1〜64。手動操作・新指示は旧Skillを取り消す。
   レビュー反映: Skillを離れるときは `goal:null` のcancel handshakeを完了してから通常actionへ移る。terminal receiptは収納前にqueue枠を予約し、満杯時は pending として再送する（黙って捨てない）。Forgeは `timeoutMs` で単発actionを打ち切る。Daemonは取消receiptを再選択ではなくcancelledで終端する。
   control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
+  lease/receipt追加反映: leaseは受理が確定したpollのみ更新（`stale_goal`/`conflicting_goal`/`stale_state`等の拒否では更新しない）。action receiptの `goalRevision` を該当Skillのrevisionと照合し、不一致は409。terminal後に届いた既知actionのreceiptはrecorded/ACKのみで `settled` に記録し、terminal resultとprogressは変えない（未知IDは409）。
 
 ### pickup / deposit の設計判断（重要）
 
@@ -90,7 +90,7 @@ Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEM
 
 ## 検証状況
 
-直近の自動検証はPython **73件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
+直近の自動検証はPython **76件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
 
 実ゲームで確認済み（0.0.9～0.0.12分）:
 
@@ -210,7 +210,7 @@ Phase 6の残りは `attack / mine / place / craft / smelt`。`pickup` と `depo
 - Daemonのログ: `.tools/daemon.stdout.log` / `.tools/daemon.stderr.log`、PID記録 `.tools/daemon.pid`（現在性は保証しない）。
   `intent-*` `lifecycle-*` `phase*-*` は過去セッションの記録。
 - ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`（MODの初期化・例外）と `latest.log`（チャット、CP932）。
-- 配置済み0.0.12のSHA-256: `310CE06B6E7361E8B9C8DEA90158C617D97CC0E5A313DB92917AE10682AB8713`。
+- 配置済み0.0.12のSHA-256: `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`。
 - Claude向けの権限設定は `.claude/settings.json`（読み取り専用コマンド、上記3スクリプト、WebFetchの許可ドメイン）。
 
 古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。

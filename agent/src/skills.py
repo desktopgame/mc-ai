@@ -57,6 +57,7 @@ class CollectDrop:
         self.cancel_reason = None
         self.finished_at = None
         self.settled = {}          # actionId -> {"status", "reason", "count"}
+        self.issued_ids = set()    # every actionId this Skill ever issued, settled or not
         self.unresolved = False
 
     def definition(self):
@@ -107,16 +108,17 @@ class SkillManager:
         if isinstance(goal, str):
             return self._legacy(session, revision, goal)
         with self.lock:
-            # Only an accepted control poll renews the lease; action results and status reads do not.
-            self.leases[session] = self.clock()
+            now = self.clock()
             previous = self.revisions.get(session)
             if previous is not None and revision < previous:
                 raise SkillSyncError("stale_goal")
             if previous is not None and revision == previous:
+                # Rejected polls (conflicting/stale) must not renew the lease.
                 return self._poll_locked(session, goal)
             if goal is None:
                 self._cancel_session(session, "stopped")
                 self.revisions[session] = revision
+                self.leases[session] = now
                 return self._empty_view(session, revision)
             state = self._fresh_state(session)
             companion = state["companion"]
@@ -127,10 +129,11 @@ class SkillManager:
             old = self.active.get(session)
             if old is not None:
                 self._move_to_settling(old, "replaced")
-            skill = CollectDrop(session, revision, goal, str(uuid.uuid4()), self.clock(),
+            skill = CollectDrop(session, revision, goal, str(uuid.uuid4()), now,
                                 companion["id"], state["dimension"])
             self.active[session] = skill
             self.revisions[session] = revision
+            self.leases[session] = now
             self._step(skill)
             return self._view(session, skill)
 
@@ -145,6 +148,8 @@ class SkillManager:
             skill = self._find(session, parsed["skillInstanceId"])
             if skill is None:
                 raise SkillSyncError("unknown_skill")
+            if parsed["goalRevision"] != skill.revision:
+                raise SkillSyncError("unknown_action")
             self._apply_result(skill, parsed)
         return {"version": 2, "accepted": True}
 
@@ -184,6 +189,8 @@ class SkillManager:
         if self.goals is None:
             raise SkillSyncError("unsupported_goal")
         view = self.goals.update({"version": 1, "session": session, "goalRevision": revision, "goal": goal})
+        with self.lock:
+            self.leases[session] = self.clock()
         return self._legacy_view(view)
 
     def _legacy_view(self, view):
@@ -200,15 +207,18 @@ class SkillManager:
         if skill is not None:
             if skill.definition() != goal:
                 raise SkillSyncError("conflicting_goal")
+            self.leases[session] = self.clock()
             self._step(skill)
             return self._view(session, skill)
         for value in self.other.values():
             if value.session == session and value.revision == self.revisions.get(session):
                 if value.goal != goal:
                     raise SkillSyncError("conflicting_goal")
+                self.leases[session] = self.clock()
                 return self._view(session, value)
         if goal is not None:
             raise SkillSyncError("conflicting_goal")
+        self.leases[session] = self.clock()
         return self._empty_view(session, self.revisions[session])
 
     def _empty_view(self, session, revision):
@@ -319,9 +329,6 @@ class SkillManager:
         if skill.current is not None:
             return
         now = self.clock()
-        # No fresh control lease: do not issue. The Forge renews it about once a second while it runs.
-        if now - self.leases.get(skill.session, float("-inf")) > CONTROL_LEASE:
-            return
         cached = self._cache(skill.session)
         if skill.fence_sequence is not None:
             if not cached["stale"] and cached["sequence"] > skill.fence_sequence:
@@ -345,11 +352,15 @@ class SkillManager:
         if skill.issued >= MAX_ACTIONS:
             self._finalize(skill, "failed", "retry_exhausted")
             return
+        # No fresh control lease: do not issue. The Forge renews it about once a second while it runs.
+        if now - self.leases.get(skill.session, float("-inf")) > CONTROL_LEASE:
+            return
         _, target_ref = candidates[0]
         skill.issued += 1
         skill.current = {"actionId": str(uuid.uuid4()), "sequence": skill.issued, "targetRef": target_ref,
                          "maxCount": min(skill.requested - skill.acquired, 64),
                          "observationSequence": cached["sequence"], "issuedAt": now, "running": False}
+        skill.issued_ids.add(skill.current["actionId"])
         skill.unresolved = True
         skill.phase = "waiting_action"
 
@@ -366,12 +377,20 @@ class SkillManager:
 
     def _apply_result(self, skill, parsed):
         if skill.phase == "terminal":
+            # The terminal result is immutable. A known receipt is ACKed and recorded only.
             recorded = skill.settled.get(parsed["actionId"])
-            if recorded is None:
+            if recorded is not None:
+                if recorded["status"] != parsed["status"] or recorded["reason"] != parsed["reason"] \
+                        or recorded["count"] != parsed["acquired"]["count"]:
+                    raise SkillSyncError("conflicting_result")
+                return
+            if parsed["actionId"] not in skill.issued_ids:
                 raise SkillSyncError("unknown_action")
-            if recorded["status"] != parsed["status"] or recorded["reason"] != parsed["reason"] \
-                    or recorded["count"] != parsed["acquired"]["count"]:
+            if parsed["acquired"]["item"] != skill.item:
                 raise SkillSyncError("conflicting_result")
+            if parsed["status"] != "running":
+                skill.settled[parsed["actionId"]] = {"status": parsed["status"], "reason": parsed["reason"],
+                                                     "count": parsed["acquired"]["count"]}
             return
         current = skill.current
         if current is None or current["actionId"] != parsed["actionId"] \

@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from skills import SkillManager, SEARCH_WINDOW
+from skills import SkillManager, SEARCH_WINDOW, SKILL_DEADLINE
 from execution_registry import ExecutionRegistry
 from state_cache import StateCache, SyncError
 from skill_protocol import SkillRequestError, SkillSyncError
@@ -169,6 +169,63 @@ class SkillTests(unittest.TestCase):
         self.assertIsNone(manager.active["world"].current)
         view = manager.update(goal(1, count=5, epoch=self.epoch))
         self.assertIsNotNone(view["action"])
+
+    def test_lease_renews_only_on_accepted_update(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        self.accept(manager, 1, count=5)
+        self.assertEqual(manager.leases["world"], 0.0)
+        self.now[0] = 3.0
+        with self.assertRaises(SkillSyncError):
+            manager.update(goal(1, item="minecraft:cobblestone", count=5, epoch=self.epoch))
+        self.assertEqual(manager.leases["world"], 0.0)
+        with self.assertRaises(SkillSyncError):
+            manager.update(goal(0, count=5, epoch=self.epoch))
+        self.assertEqual(manager.leases["world"], 0.0)
+        self.now[0] = 4.0
+        manager.update(goal(1, count=5, epoch=self.epoch))
+        self.assertEqual(manager.leases["world"], 4.0)
+
+    def test_receipt_revision_must_match_skill(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=2)["action"]
+        bad = {"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 2,
+               "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+               "actionSequence": action["actionSequence"], "status": "running", "reason": "accepted",
+               "acquired": {"item": "minecraft:log", "count": 0}}
+        with self.assertRaises(SkillSyncError):
+            manager.result(bad)
+
+    def test_late_receipt_after_terminal_is_recorded_but_result_immutable(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        running = {"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                   "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                   "actionSequence": action["actionSequence"], "status": "running", "reason": "accepted",
+                   "acquired": {"item": "minecraft:log", "count": 0}}
+        manager.result(running)
+        self.now[0] = SKILL_DEADLINE + 1
+        manager.tick()
+        view = manager.update(goal(1, count=5, epoch=self.epoch))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["skill"]["result"]["reason"], "expired")
+        self.assertFalse(view["skill"]["result"]["progress"]["complete"])
+        late = {"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                "actionSequence": action["actionSequence"], "status": "succeeded", "reason": "completed",
+                "acquired": {"item": "minecraft:log", "count": 2}}
+        self.assertEqual(manager.result(late), {"version": 2, "accepted": True})
+        self.assertEqual(manager.result(late), {"version": 2, "accepted": True})
+        with self.assertRaises(SkillSyncError):
+            manager.result(dict(late, acquired={"item": "minecraft:log", "count": 3}))
+        view = manager.update(goal(1, count=5, epoch=self.epoch))
+        self.assertEqual(view["skill"]["result"]["reason"], "expired")
+        self.assertFalse(view["skill"]["result"]["progress"]["complete"])
+        unknown = dict(late, actionId="never-issued", actionSequence=99)
+        with self.assertRaises(SkillSyncError):
+            manager.result(unknown)
 
     def test_cancelled_receipt_without_prior_cancel_is_terminal(self):
         states, manager, self.epoch = self.create()
