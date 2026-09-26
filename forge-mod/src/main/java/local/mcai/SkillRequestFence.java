@@ -8,7 +8,11 @@ import com.google.gson.JsonObject;
  * Shared {@code skillResponse}/{@code skillDone} flags cannot tell an old Skill's reply from a new
  * one. Every request carries the generation at launch, and a completion is only allowed to affect
  * the current Skill state when its generation still matches. Advancing the generation fences out
- * every outstanding open/goal/cancel at once. Pure and unit-testable.
+ * every outstanding open/goal/cancel at once.
+ *
+ * Each request also owns its own completion slot, so a worker for an old request can never erase the
+ * completion of a newer request, and a lost completion is bounded by {@link Request#expired}. Pure
+ * and unit-testable.
  */
 public final class SkillRequestFence {
     public SkillRequestFence() { }
@@ -20,10 +24,14 @@ public final class SkillRequestFence {
         public final int revision;
         public final String epoch;       // null for open, which establishes the epoch
         public final long started;
+        /** Written once by the request's own worker; read only while this request is the current one. */
+        public volatile Completion completion;
         Request(int generation, String kind, String session, int revision, String epoch, long started) {
             this.generation = generation; this.kind = kind; this.session = session;
             this.revision = revision; this.epoch = epoch; this.started = started;
         }
+        /** True when no completion has arrived within the allowance, so the request may be abandoned. */
+        public boolean expired(long now, long timeoutNanos) { return now - started > timeoutNanos; }
     }
 
     public static final class Completion {
@@ -52,6 +60,15 @@ public final class SkillRequestFence {
 
     public boolean current(Request request) { return request != null && request.generation == generation; }
     public boolean stale(Request request) { return !current(request); }
+
+    /**
+     * A response is fresh only if its request was sent within the lease window. A response that a
+     * paused game thread consumes long after the request was issued is not fresh, even if the worker
+     * received it quickly, and must not renew the lease or start a world mutation.
+     */
+    public static boolean fresh(Request request, long now, long leaseNanos) {
+        return request != null && now - request.started <= leaseNanos;
+    }
 
     /** A valid open ACK is a v2 envelope for the same session; it is what establishes the epoch. */
     public static boolean validOpenAck(Request request, JsonObject response) {

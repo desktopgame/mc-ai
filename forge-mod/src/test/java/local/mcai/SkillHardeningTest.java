@@ -95,4 +95,64 @@ public class SkillHardeningTest {
         assertFalse(SkillRequestFence.validCancelAck(cancel, null));
         assertFalse(SkillRequestFence.validCancelAck(null, view("world", 3, "boot", "idle")));
     }
+
+    // ---- stale first-action response + per-request completion ----------------
+    private static final long LEASE = 5000000000L;
+    private static final long TIMEOUT = 6000000000L;
+
+    @Test public void aReadyResponseOlderThanTheLeaseIsStale() {
+        SkillRequestFence fence = new SkillRequestFence();
+        SkillRequestFence.Request ready = fence.goal("world", 1, "boot", 0L);
+        // A response received quickly but consumed after a pause is stale, because age uses started.
+        assertTrue(SkillRequestFence.fresh(ready, LEASE, LEASE));
+        assertFalse(SkillRequestFence.fresh(ready, LEASE + 1, LEASE));
+        assertFalse(SkillRequestFence.fresh(null, 0L, LEASE));
+    }
+
+    @Test public void anUnansweredRequestExpiresSoItIsNeverAwaitedForever() {
+        SkillRequestFence fence = new SkillRequestFence();
+        SkillRequestFence.Request open = fence.open("world", 0L);
+        assertFalse(open.expired(TIMEOUT, TIMEOUT));
+        assertTrue(open.expired(TIMEOUT + 1, TIMEOUT));
+    }
+
+    @Test public void perRequestCompletionIsNotErasedByALaterRequest() {
+        SkillRequestFence fence = new SkillRequestFence();
+        SkillRequestFence.Request a = fence.goal("world", 1, "boot", 0L);
+        a.completion = new SkillRequestFence.Completion(a, view("world", 1, "boot", "running"), 1L);
+        fence.advance();
+        SkillRequestFence.Request b = fence.goal("world", 2, "boot", 2L);
+        b.completion = new SkillRequestFence.Completion(b, view("world", 2, "boot", "running"), 3L);
+        // Reading and discarding the current request must never touch the previous request's slot.
+        SkillRequestFence.Completion done = b.completion;
+        b.completion = null;
+        assertNull(b.completion);
+        assertNotNull(a.completion);
+        assertSame(b, done.request);
+        assertFalse(fence.current(a));
+        assertTrue(fence.current(b));
+    }
+
+    @Test public void aLateWorkerForAnOldRequestCannotEraseTheNewerCompletion() throws Exception {
+        final SkillRequestFence fence = new SkillRequestFence();
+        final SkillRequestFence.Request a = fence.goal("world", 1, "boot", 0L);
+        a.completion = new SkillRequestFence.Completion(a, view("world", 1, "boot", "running"), 1L);
+        fence.advance();
+        final SkillRequestFence.Request b = fence.goal("world", 2, "boot", 2L);
+        final java.util.concurrent.CountDownLatch bWritten = new java.util.concurrent.CountDownLatch(1);
+        Thread lateWorker = new Thread(new Runnable() {
+            @Override public void run() {
+                try { bWritten.await(); } catch (InterruptedException ignored) { }
+                a.completion = new SkillRequestFence.Completion(a, view("world", 1, "boot", "idle"), 9L);
+            }
+        });
+        lateWorker.start();
+        b.completion = new SkillRequestFence.Completion(b, view("world", 2, "boot", "running"), 3L);
+        bWritten.countDown();
+        lateWorker.join();
+        assertNotNull("the old worker erased the new request's completion", b.completion);
+        assertSame(b, b.completion.request);
+        assertFalse(fence.current(a));
+        assertTrue(fence.current(b));
+    }
 }

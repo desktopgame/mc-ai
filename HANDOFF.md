@@ -8,7 +8,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
-自動テストはPython 91件・Java 61件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 91件・Java 65件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -22,12 +22,12 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.19`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.19.jar`（SHA-256 `6BDD2121DB97B4DCBE72BD0E5D0469D77B284F2935D97510CE65D75B045394CA`）。0.0.18以前は `.disabled` |
+| MODバージョン | `0.0.20`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.20.jar`（SHA-256 `A48F305FA65C03C0FD552C1822DEEE1946DDFD69ED535FEB95FB7910B5DD4B4A`）。0.0.19以前は `.disabled` |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **91件**・Java **61件**・Forgeビルド成功 |
+| 自動テスト | Python **91件**・Java **65件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -45,6 +45,18 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | **P2-5** cancel handshakeの失敗を成功扱いする | `startSkillGoal(goal, cancel)` と cancel専用 `Request` を追加。ACKは `SkillRequestFence.validCancelAck`（session/revision/epoch一致＋`status=="idle"`）のみ成功。timeout/null/409/staleは未完了として約1秒間隔で最大3回再試行し、未確認なら `failSkill("disconnected")` で安全停止（無限待機しない）。ローカル停止は `finishCancelHandshake` で通信を待たない。ACKを再送で成立させるため `skills.py` の `goal:null` を同一revisionでも冪等取消として受理 | `test_skills.py`: `test_null_cancel_is_idempotent_at_same_revision` ＋ `SkillHardeningTest.cancelAckNeedsMatchingIdentityAndIdle` |
 
 維持を確認した不変条件: `collect_drop` 成功条件、`mine` count=1、1 action = 1 world mutation、acquired/destroyed分離、receipt idempotency、terminal result immutability、control lease、result queue reservation、opaque/projection境界、Daemon tickからHTTP/LLMを呼ばないこと。
+
+## Skill transport硬化 — review-7cb43e9 の P1/P2（0.0.20）
+
+`collect_block` 前の増分。前回P1〜5・BlockExposure/BlockCandidatesは維持。
+
+| 指摘 | 閉じたコード変更 | 追加した回帰テスト |
+| --- | --- | --- |
+| **P1** 期限切れの初回action応答をclaimできる | `SkillRequestFence.fresh(request, now, lease)` を追加し、`ActionBridge.consumeSkill` の入口で `now - request.started > CONTROL_LEASE` の応答を**捨てる**（受信時刻ではなく送信時刻基準なので、pause中にworkerが早く返していてもgame threadのconsume時ageで判定）。stale応答はlease更新・新規claim・world mutationにつながる遷移に使わず、`failSkill` の理由にもしない。次のfresh pollでDaemon状態を取り直す。ローカルの安全停止（`SkillMutationGuard`／tickの安全net）は従来どおり先に適用 | `SkillHardeningTest.aReadyResponseOlderThanTheLeaseIsStale` |
+| **P2** 世代付きCompletionの単一volatile欄で最新完了を失う | 共有 `openDone/goalDone/cancelDone` を廃止し、`SkillRequestFence.Request` が `volatile Completion completion` を保持。workerは自requestの `completion` にのみ書き、game threadは `goalCall.completion` 等**現在request自身**だけを読む。旧requestの完了は新requestのcompletionを上書きできない。`clearSkillCalls` は現在request参照のみnull化 | `SkillHardeningTest.perRequestCompletionIsNotErasedByALaterRequest` / `aLateWorkerForAnOldRequestCannotEraseTheNewerCompletion` |
+| **P2 timeout** completionが失われても永久待機しない | `Request.expired(now, REQUEST_TIMEOUT_NANOS=6s)` を追加。open/goalはcompletion未到着でも期限超過でrequestを破棄して再送可能状態へ。cancelは既存の最大3回再試行と同じゲートに統合（期限超過は未確認試行として数える） | `SkillHardeningTest.anUnansweredRequestExpiresSoItIsNeverAwaitedForever` |
+
+stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillRequestFence.fresh(...)`。completionのdelivery: request-scoped `Request.completion`。lost completion: `Request.expired(...)` による有界timeout（open/goalは再送、cancelは3回上限）。
 
 
 ## 実装済みの機能

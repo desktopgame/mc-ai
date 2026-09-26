@@ -44,12 +44,13 @@ public final class ActionBridge {
     private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
     private long claimedDeadline;
     private JsonObject skillGoal, pendingSkillResult;
-    // Each in-flight v2 request keeps its own generation-tagged record, so a stale reply can never
-    // touch the current Skill and an old completion never clears the new in-flight flag.
+    // Each in-flight v2 request owns its completion, so a stale worker can never erase a newer
+    // request's reply and reading the current request is race-free.
     private SkillRequestFence.Request openCall, goalCall, cancelCall;
-    private volatile SkillRequestFence.Completion openDone, goalDone, cancelDone;
     /** Control lease: a verified same-epoch/session/revision response keeps the action alive this long. */
     private static final long CONTROL_LEASE_NANOS = 5000000000L;
+    /** A request whose completion never arrives is abandoned after this long (safely resend-able). */
+    private static final long REQUEST_TIMEOUT_NANOS = 6000000000L;
     /** A cancel handshake is abandoned after this many unconfirmed attempts. */
     private static final int MAX_CANCEL_ATTEMPTS = 3;
 
@@ -251,7 +252,6 @@ public final class ActionBridge {
 
     private void clearSkillCalls() {
         openCall = null; goalCall = null; cancelCall = null;
-        openDone = null; goalDone = null; cancelDone = null;
     }
 
     private boolean enqueueSkillResult(String actionId, int sequence, String status, String reason,
@@ -291,11 +291,11 @@ public final class ActionBridge {
                 JsonObject response = null;
                 try { response = client.post("/v2/execution/open", body); }
                 catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open unavailable ({})", e.getClass().getSimpleName()); }
-                finally { openDone = new SkillRequestFence.Completion(request, response, System.nanoTime()); }
+                finally { request.completion = new SkillRequestFence.Completion(request, response, System.nanoTime()); }
             }
         });
         if (!accepted) {
-            openDone = new SkillRequestFence.Completion(request, null, System.nanoTime());
+            request.completion = new SkillRequestFence.Completion(request, null, System.nanoTime());
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open executor rejected request");
         }
     }
@@ -313,15 +313,11 @@ public final class ActionBridge {
                 JsonObject response = null;
                 try { response = client.post("/v2/goal", body); }
                 catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control unavailable ({})", e.getClass().getSimpleName()); }
-                finally {
-                    SkillRequestFence.Completion completion = new SkillRequestFence.Completion(request, response, System.nanoTime());
-                    if (cancel) { cancelDone = completion; } else { goalDone = completion; }
-                }
+                finally { request.completion = new SkillRequestFence.Completion(request, response, System.nanoTime()); }
             }
         });
         if (!accepted) {
-            SkillRequestFence.Completion completion = new SkillRequestFence.Completion(request, null, System.nanoTime());
-            if (cancel) { cancelDone = completion; } else { goalDone = completion; }
+            request.completion = new SkillRequestFence.Completion(request, null, System.nanoTime());
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control executor rejected request");
         }
     }
@@ -345,13 +341,17 @@ public final class ActionBridge {
                     companionAlive, ownerAlive, sameWorld, unsafe, expired, pathNotFound);
             if (!decision.waiting()) { finishSkillAction(decision.status, decision.reason, decision.count); }
         }
-        SkillRequestFence.Completion opened = openDone;
-        if (opened != null) {
-            openDone = null;
-            if (openCall == opened.request) { openCall = null; }
-            if (fence.current(opened.request)) {   // a stale generation is discarded, never fatal
-                if (!SkillRequestFence.validOpenAck(opened.request, opened.response)) { failSkill("disconnected"); return; }
-                skillEpoch = ActionProtocol.string(opened.response, "daemonEpoch");
+        SkillRequestFence.Request open = openCall;
+        if (open != null) {
+            SkillRequestFence.Completion opened = open.completion;
+            if (opened != null) {
+                openCall = null;
+                if (fence.current(open)) {   // a stale generation is discarded, never fatal
+                    if (!SkillRequestFence.validOpenAck(open, opened.response)) { failSkill("disconnected"); return; }
+                    skillEpoch = ActionProtocol.string(opened.response, "daemonEpoch");
+                }
+            } else if (open.expired(now, REQUEST_TIMEOUT_NANOS)) {
+                openCall = null;   // lost completion: abandon so a fresh open can be sent
             }
         }
         if (skillEpoch == null) {
@@ -359,16 +359,19 @@ public final class ActionBridge {
             return;
         }
         if (skillCancelPending) {
-            SkillRequestFence.Completion cancelled = cancelDone;
-            if (cancelled != null) {
-                cancelDone = null;
-                if (cancelCall == cancelled.request) { cancelCall = null; }
-                if (fence.current(cancelled.request)
-                        && SkillRequestFence.validCancelAck(cancelled.request, cancelled.response)) {
-                    finishCancelHandshake();
-                    return;
+            SkillRequestFence.Request cancel = cancelCall;
+            if (cancel != null) {
+                SkillRequestFence.Completion cancelled = cancel.completion;
+                if (cancelled != null) {
+                    cancelCall = null;
+                    if (fence.current(cancel) && SkillRequestFence.validCancelAck(cancel, cancelled.response)) {
+                        finishCancelHandshake();
+                        return;
+                    }
+                    // timeout / null / 409 / stale: not a completed handshake, so retry below.
+                } else if (cancel.expired(now, REQUEST_TIMEOUT_NANOS)) {
+                    cancelCall = null;   // lost completion counts as one unconfirmed attempt
                 }
-                // timeout / null / 409 / stale: not a completed handshake, so retry below.
             }
             if (cancelCall == null && now >= nextPoll) {
                 if (skillCancelAttempts >= MAX_CANCEL_ATTEMPTS) {
@@ -381,11 +384,15 @@ public final class ActionBridge {
             }
             return;
         }
-        SkillRequestFence.Completion completed = goalDone;
-        if (completed != null) {
-            goalDone = null;
-            if (goalCall == completed.request) { goalCall = null; }
-            if (fence.current(completed.request)) { consumeSkill(completed.request, completed.response); }
+        SkillRequestFence.Request goal = goalCall;
+        if (goal != null) {
+            SkillRequestFence.Completion completed = goal.completion;
+            if (completed != null) {
+                goalCall = null;
+                if (fence.current(goal)) { consumeSkill(goal, completed.response); }
+            } else if (goal.expired(now, REQUEST_TIMEOUT_NANOS)) {
+                goalCall = null;   // lost completion: a fresh poll re-reads the Daemon state
+            }
         }
         if (!skillActive || goalCall != null || now < nextPoll) { return; }
         // Poll even while an action is outstanding: the response renews the control lease and lets
@@ -401,14 +408,21 @@ public final class ActionBridge {
     }
 
     private void consumeSkill(SkillRequestFence.Request request, JsonObject response) {
-        if (response == null) { failSkill("disconnected"); return; }
+        long now = System.nanoTime();
+        boolean fresh = SkillRequestFence.fresh(request, now, CONTROL_LEASE_NANOS);
+        if (response == null) {
+            // A quick transport failure remains fatal; a stale one is recovered by the next poll.
+            if (fresh) { failSkill("disconnected"); }
+            return;
+        }
+        // A reply that a paused game thread consumes after the lease window carries stale authority:
+        // it must not renew the lease, claim a new action or drive a world mutation. Discard it and
+        // re-read the Daemon state with a fresh poll; this is deliberately not a failSkill reason.
+        if (!fresh) { return; }
         try {
             SkillProtocol.validateView(response, request.session, request.revision, request.epoch);
-            // A verified control response renews the lease for the action that is running, but a
-            // response older than the lease window must not extend it.
-            if (active != null && System.nanoTime() - request.started <= CONTROL_LEASE_NANOS) {
-                active.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
-            }
+            // A verified control response renews the lease for the action that is running.
+            if (active != null) { active.setControlDeadline(now + CONTROL_LEASE_NANOS); }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
             if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
             if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.achieved); return; }
