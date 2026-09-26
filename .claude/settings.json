@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/.env)",
+      "Read(/.env.*)",
+      "Read(/secrets/**)",
+
+      "Read(/.tools/social-api-key.txt)"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(uv run *)",
+
+      "WebFetch"
+    ],
+    "allow": [
+      "Bash(mkdir -p *)",
+      "Bash(uv format *)",
+      "Bash(uvx ruff *)",
+
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log -n *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  },
+  "env": {
+    "EDITOR": "code --wait",
+    "VISUAL": "code --wait"
+  }
+}
