@@ -169,7 +169,7 @@ python agent/src/daemon.py --port 8767 --config agent/config.local.json
 
 環境変数 `MCAI_SOCIAL_API_KEY` でも指定できる。ファイルより環境変数を優先する。詳細と新規clone時の設定は [Agent README](agent/README.md) を参照。
 
-会話履歴はDaemonのメモリ内だけに保持し、直近6往復・約4000文字まで。セッションはワールドへの入場単位とプレイヤーで分離する。再入場やDaemon再起動で以前の会話を引き継がず、最大32セッションを超えると古いものから除去する。
+会話履歴はDaemonのメモリ内だけに保持し、設定した履歴予算と入力全体の予算に収まるよう古い往復から削除する。セッションはワールドへの入場単位とプレイヤーで分離する。再入場やDaemon再起動で以前の会話を引き継がず、最大32セッションを超えると古いものから除去する。
 Socialモデルへ送るのはpersonaと短い会話履歴だけ。ゲーム状態・プレイヤー識別子は送らない。Phase 4のTactical providerへ会話データを転送する経路は持たない。
 
 通常会話は `reasoning_effort: none`、生成上限256トークン、API待ち時間30秒。MODの会話待ち時間は50秒。失敗時に自動再試行せず、履歴とゲーム内の動作を変更しない。
@@ -299,7 +299,7 @@ javac -version
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
 成果物は `forge-mod/build/libs/mc-ai-companion-0.0.5.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
-ログ中の `MC AI Companion initialized (Phase 5)` が現在のMODの初期化メッセージ。
+現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
 旧ForgeGradleの配布先・Gradle互換性の問題を避けるため、[anatawa12のForgeGradle 1.2修正版](https://github.com/anatawa12/ForgeGradle-1.2)を利用する。バージョンは固定し、動的な `+` 指定は使わない。
 

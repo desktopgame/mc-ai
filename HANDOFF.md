@@ -1,194 +1,130 @@
-# 再開用メモ — 2026-09-26
+# エージェント引き継ぎ — 2026-09-26
 
-## 現在地
+## 最初に読むもの
 
-### コンテキスト予算 — Daemon / 2026-09-26
+このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
+`init.md` に作業ログを追加しない。READMEのPhase別の検証記録は当時の記録として読む。
 
-`agent/src/context_budget.py` にSocial/Decision独立のコンテキスト・入力・出力予算、Socialの履歴予算を実装。
-履歴の固定6往復/4000文字を廃止し、古い往復から削って入力全体と履歴の両予算を満たす。system・今回の発話・schemaだけで超過ならモデルを呼ばず422。
-provider直呼び出しにも予算チェックを適用。非同期goalはfailedと固定エラー理由を記録する。失敗時に会話履歴は更新しない。
-計数はUTF-8バイト数と枠の余裕による推定で、正確なtokenizerは未導入。`TokenCounter` 注入で後から差し替え可能。
-詳細・既定値・旧max_tokensとの互換は `agent/README.md` の「コンテキスト予算」を参照。
+利用者は使用量の都合で別のエージェントへ引き継ぐ予定。新しい実装範囲はまだ決めていない。
+まず下記の反映待ちを把握し、次の機能は利用者と決める。
 
-LM Studioのロード済みcontextLengthは65,536（理論最大262,144とは異なる）。Git管理外の両設定をcontext65,536・output256・margin512へ更新。
-Social入力8,192/履歴4,096、Decision入力4,096。キー設定は維持した。
-自動テスト50件成功。実モデルでSocialのfollow_ownerとDecisionのfollow生成成功。検証は独立したproviderインスタンスで行い、ゲームにはactionを送っていない。
-HTTPテストのHTTPConnectionをclosingで閉じるよう修正。既存のHTTPエラーテストが一度Windowsの接続切断エラーとなったが、再実行では全件成功。
+## 現在地（2026-09-26 12:04～12:06 JSTに確認）
 
-常駐Daemonはこの変更では再起動していないため、新設定の反映には再起動が必要。MODは変更なし・jar差し替え不要。
-以下の0.0.8は引き続きPrism未配置、インストール済みは0.0.7。新しい予算超過理由のゲーム内専用表示は未実装で、API/ログに理由を残す。
+| 項目 | 確認結果 |
+| --- | --- |
+| Git HEAD | `5bf96a3` — Update: ドキュメント更新 |
+| コミット状況 | 会話指示 `906f613`、Executor `02a2d05`、予算管理 `11f5d3d`、資料更新 `5bf96a3` までコミット済み。今回の資料見直し前は作業ツリーがクリーン |
+| Minecraft | ゲームプロセスは確認されず、終了状態。Prism Launcher自体は起動中 |
+| Daemon | PID `12240` が `agent/src/daemon.py --port 8767` として稼働。`127.0.0.1:8767` の待受も確認 |
+| LM Studio | 起動中。PID `21708` が `127.0.0.1:1234` で待受。モデルの現在のロード状態は今回再確認していない |
+| Prismの有効MOD | `mc-ai-companion-0.0.7.jar`。0.0.8は未配置 |
+| 最新ビルド成果物 | `forge-mod/build/libs/mc-ai-companion-0.0.8.jar` |
+| ローカル予算設定 | 更新済み。下記参照 |
 
-### 通信Executorへの整理 — MOD 0.0.8
+この確認ではプロセスの起動・停止、jar配置、コミットは行っていない。今回の変更は資料のみ。
+プロセス・HEAD・作業ツリーは変化するため、次回は再確認する。PIDファイルやこの表だけを根拠に停止しない。
 
-リクエストごとの `new Thread` を `IoExecutors` に置き換えた。会話・観測・行動制御・結果通知の4系統を独立させ、各1worker・待機1件に制限。
-スレッドを再利用し、idle30秒で解放。プロセス所有とし、ワールド再入場ごとにはプールを増やさない。JVM終了時にshutdownNowする。
-既存のinFlight、待機列上限、タイムアウト、ゲームスレッドへの結果反映と世代チェックは維持する。
-送信拒否でゲームスレッドへHTTPを押し戻さず、各Bridgeで明示的に失敗処理する。即時停止は通信待ちと独立したまま。
+**反映待ち:** 常駐Daemonは予算管理変更前からのプロセスなので、最新コード・設定の利用には再起動が必要。
+Executor変更をゲームで使うには0.0.8をPrismへ配置する必要がある。予算管理だけならMODの差し替えは不要。
 
-Java30件とForgeビルドが成功。追加4件は系統間の独立、キュー上限・呼出元で実行しないこと、スレッド再利用、終了時の割り込み・待機破棄・新規受付拒否を検証する。
-Python/APIは変更なしのため、この整理ではPythonテストを再実行していない（直前41件成功）。
-生成jar: `forge-mod/build/libs/mc-ai-companion-0.0.8.jar`。Prismへは未配置、実ゲームでの再確認も未実施。現在インストール済みは下記の0.0.7。
-ゲームとDaemonはこの整理では操作していない。コミットもしていない。
+## 実装済みの機能
 
-### 会話からの指示 — 2026-09-26 / MOD 0.0.7
+- Phase 0～5: Forge環境、HTTP ping、Companionの生成・保存・手動操作、ローカル会話、独立したTactical判断、snapshotと差分観測・キャッシュ・再同期。
+- 行動管理基盤（0.0.6）: 判断→両側検証→実行→結果通知。`!agent do follow / look`、即時停止、取消・置換、古い判断と遅延結果の拒否。
+- 会話指示（0.0.7）: `!agent chat ついてきて / こっちを見て / 止まって` から限定intentを生成しGoal Managerへ渡す。会話からの操作は実装済み。
+- 追従修正: 近距離でもfollowを維持し、所有者が離れたら移動を再開。経路失敗は約1秒間隔で3回連続まで再試行し、途中は `path_retrying`。
+- 否定への応答: 明確な「止まらないで」「そのまま続けて」等にはモデルを使わず「わかった。今の動作は変えないよ。」とintent:noneを返す。
+- 通信Executor（0.0.8）: 会話・観測・行動制御・結果通知の4系統、各1worker・待機1件。30秒idleで解放。既存の世代照合と受付上限を維持。即時停止は通信待ちと独立。
+- コンテキスト予算（Daemon）: Social/Decisionで入力・出力・コンテキスト上限を独立設定。Social履歴は古い往復から削り、履歴と全入力の両予算を満たす。必須入力だけで超過ならモデルを呼ばず422。非同期goalはfailedと理由を記録。
 
-`!agent chat ついてきて / こっちを見て / 止まって` の会話入口を追加した。
-Socialが構造化された返答と `none / follow_owner / stop / look_at_owner` のintentを生成し、ゲーム側で受付順を確認して既存の目的管理へ渡す。
-「止まって」「キャンセル」等の短い停止表現は発言全体をローカル照合し、LLM・待機列を待たずに停止する。
-その他の自然文は会話FIFOで分類する。普通のMinecraftチャットは自動取得せず、`!agent chat` を入口とする。
-
-新しい入力順ticketで、手動停止・新指示・失敗・再接続後の古いintentを拒否する。雑談は行動を取り消さない。
-Socialの会話やreplyはTacticalへ送らず、目的の固定値だけを渡す。従来の空actionsと検証用decision APIも維持。
-否定・引用・条件・複数操作・未対応操作はnoneにする方針。代表表現はコードでも拒否するが、任意の自然文の完全な意味判定は保証しない。
-自然文からの指示の詳細はREADME冒頭と `protocol/action-lifecycle.md`。
-
-検証済み:
-
-- Python41件・Java26件、計67件成功。Forgeビルド成功。
-- 指定の実モデルで11ケース成功: 追従・注視・停止、雑談、否定、引用、条件付き、採掘、所有者以外への注視、丁寧な追従依頼、指示後の雑談。
-- 同一会話履歴での実モデル判定は約2.2～2.7秒。追従・注視はこの後にTactical判断も必要。
-- 再起動したDaemonのHTTP経由で `acceptIntent:true` → `follow_owner`、actions空を確認。
-- Prismへ0.0.7を配置し、配置jarとビルド成果物のSHA-256一致確認済み。0.0.6は `.jar.disabled` で保持。
-- 実ゲームでSocialのfollow/look intent、Tactical判断、追従中の座標変化、注視の完了まで確認。
-- 利用者から追従しないように見えるとの報告があり、近距離でfollowをstopへ変換していた既存ルールと、初回の経路失敗でAI追従を即終了していた処理を修正した。
-- 修正後は近距離でもfollowを維持し、所有者が離れたら移動を再開する。経路は約1秒間隔で3回連続の失敗まで再試行し、途中は `path_retrying` を観測する。
-- 実モデルで距離1・5ブロックの両方がfollowになることを追加確認。利用者が修正後に動くこと、否定時も追従が続くことを確認。ログでもnear_owner→following、path_retryingからの回復、停止を確認。
-- 否定時にモデルが停止を聞き返す不自然な返答をしたため、明確な「止まらないで」「そのまま続けて」等にはモデルを使わず「わかった。今の動作は変えないよ。」とintent:noneを返すよう修正。
-- 最終の返答修正は自動テストと再起動後DaemonへのHTTPで確認済み。ゲーム内での修正後文面の再確認は未実施。その他の会話→追従・注視・停止の基本経路は実ゲームログで確認済み。
-
-現Daemonの起動時PIDは12240、PID記録は `.tools/intent-daemon.pid`。停止前には実プロセスを照合すること。
-現ログは `.tools/intent-final.stderr.log` / `.tools/intent-final.stdout.log`。ゲームでの追従修正後の検証ログは `.tools/intent-follow-fix.stderr.log`、修正前ログは `.tools/intent-daemon.stderr.log`。
-旧PID36988・10456・11400のDaemonは照合後に停止済み。修正後jarのSHA-256は `415784220406FF0D0CC82018B88770D0053DDC938404BD3E1335E1493AD89907`。
-修正前jarはPrism内の `mc-ai-companion-0.0.7-before-follow-fix.jar.disabled` として保存した。
-更新時、ワールド保存・終了後にゲームプロセスが残留。対象インスタンスを照合して通常ウィンドウ終了を試み、ウィンドウ消失後も残った当該プロセスのみ停止した。
-Prismの `1.7.10-mod-basic` は更新版で起動した。設定・モデル・APIキーは変更していない。
-この作業ではコミットしていない。ゲームとDaemonは起動したまま。
-下の0.0.6以前の節は履歴であり、現行仕様はこの節とREADME冒頭を優先する。
-
-### 行動管理基盤の実装 — 2026-09-26
-
-MOD `0.0.6` に、既存のfollow/stop/lookを使ったAI判断→検証→実行→結果通知を追加した。
-下のPhase 0～5と中断時点の節は過去の記録。現在の操作と通信仕様はREADME冒頭と `protocol/action-lifecycle.md` を優先する。
-
-- `!agent do follow / look` で目的を置換し、キャッシュを使ったAI判断後に実行する。
-- `!agent stop` / `!agent do stop` はLLMを待たずに停止して旧判断を無効化する。手動follow/lookも旧AI目的を取り消す。
-- session・goalRevision・actionIdを使い、両側で古い判断を拒否する。実行直前の個体・ディメンション・体力・距離等も確認する。
-- Socialは独立した通信とFIFOを持ち、処理中1件＋待機4件・計2048文字。forget/再入場で旧返信を破棄する。
-- 自然文のintent分類、予約実行、進捗を使った会話生成、新しいGame Actionsはまだ実装しない。
-- 結果配送はメモリ上の有界キュー・最大3回の試行。再起動をまたぐ配送保証はない。
-
-自動検証: Python **34件**、Java **19件**（計53件）が成功。Forgeビルド成功。
-遅延推論中の取消、最新待機指示への置換、重複配送、旧結果の拒否、世代・個体変更、会話キュー上限を検証した。
-実ゲームでAI判断による追従・行動中の会話・手動停止を利用者が確認した。
-判断の実測は約1.8～3.1秒、会話は約2.1秒。継続的な性能保証ではない。
-経路が見つからず停止したケースもログで確認。経路探索自体は既存のMinecraft標準処理を使用している。
-判断中の取消後に勝手に動かないこと、約3秒の注視、連続した2発言への順番どおりの返答も利用者が確認した。
-ログでも取消後の旧判断が実行されないことと、lookのrunning→succeededの結果通知を確認。今回の基盤実装と基本的な実ゲーム検証は完了。
-新基盤の再接続・応答順逆転・重複配送・会話キュー上限・forgetによる旧返信拒否は自動テストまたはコード確認の範囲で、すべての異常系を実ゲームで再現したわけではない。
-
-Prismへ0.0.6を導入し、0.0.5は `.jar.disabled` として保持した。配置jarと成果物のSHA-256一致確認済み。
-Daemonは8767で起動。起動時PID36988は `.tools/lifecycle-daemon.pid` に記録した（停止前に実プロセスを照合すること）。
-ログは `.tools/lifecycle-daemon.stderr.log` / `.tools/lifecycle-daemon.stdout.log`。ping/pong応答を確認。
-実ゲーム確認用にPrismの `1.7.10-mod-basic` を起動した。
-作業終了時点でMinecraftとDaemonは起動したまま。今回はコミットしていない。
-
-追加した主要コード:
-
-- `agent/src/goals.py`: 有界の目的管理、推論worker、世代・結果対応。
-- `forge-mod/.../ActionBridge.java`: ゲームスレッドの実行権限、制御と結果の独立通信。
-- `forge-mod/.../GoalState.java` / `ActionProtocol.java`: Minecraft非依存の世代管理と検証。
-- `forge-mod/.../ConversationQueue.java`: 会話の有界FIFOと返信の世代。
-- `agent/tests/test_goals.py` / `forge-mod/.../LifecycleTest.java`: 割り込み・遅延等の回帰テスト。
-
-### 再開時の方針追記
-
-利用者は次の作業として、既存のfollow/stop/lookをAI判断から実行する接続を選択した。
-その実装に先立ち、考え中・行動中の発話を扱える基盤を整える方針となった。
-仕様は `init.md` 第10.1節を参照。会話と行動の独立、会話と目的の世代分離、古い判断の拒否、即時停止、上限付き受付、action結果の対応付けを定義した。
-高度な自然文の割り込み分類や指示の予約は後回し。まず明示的な指示で基盤を成立させる。
-この追記時点では仕様変更のみで、下記Phase 5の実装にこの基盤はまだ入っていない。
-
-### 中断時点の記録
-
-Minecraft 1.7.10のローカルAI Companion開発。Phase 0～5の今回の実装・検証を完了し、ここで作業を中断する。
-次の担当者はまずこのファイル、[init.md](init.md)、[README.md](README.md)を読む。
-`init.md` は仕様であり、作業ログを書き足さない。
-
-**会話・観測・判断結果の取得までは実装済みだが、LLMの判断によるゲーム操作の自動実行は未実装。**
-Phase 4の判断APIは常に `executed: false` を返す。会話で「ついてきて」と言っても自動追従はしない。
-追従などは手動の `!agent follow` 等で実行する。
-
-記録時点のHEADは `c29db8b`（`Update: 差分転送`）。このメモを作る直前の作業ツリーはクリーンだった。
-このメモ追加後の変更については、次回 `git status` で確認する。今回は新たなコミットは作成していない。
+短い停止表現は発言全体をローカル照合してLLMを待たず停止する。その他の自然文は会話FIFOで処理する。
+通常のMinecraftチャットは自動取得しない。入口は `!agent chat`。
+Socialは返答と `none / follow_owner / stop / look_at_owner` のみ生成し、Tacticalへは目的の固定値だけを渡す。
+否定・引用・条件・複数操作・未対応操作はnoneにする方針だが、任意の自然文の完全な意味判定は保証しない。
 
 ## 守る設計境界
 
-- ForgeはゲームI/Oと検証済み操作の実行を担当し、provider SDK・キー・人格・長期記憶を持たせない。
-- SocialとTacticalは分離する。判断へ渡すのは限定した目的・必要なゲーム状態・許可操作だけ。
-- Tacticalには会話履歴、persona、private memory、relationship、不要なプレイヤー識別子を送らない。
-- 通常の観測は差分。挨拶のたびに世界状態をLLMへ送らない。
-- providerの文字列をMinecraft commandやシェルとして実行しない。
-- 未知の操作・欠けたパラメーターを拒否する。将来の自動実行ではDaemonとForgeの両方で検証する。
-- 推測で古いツールチェーンを更新しない。動作確認済みバージョンを維持する。
+- ForgeはゲームI/O・検証済み操作の実行を担当。provider SDK・APIキー・人格・長期記憶を持たせない。
+- Tacticalへ会話履歴、persona、private memory、relationship、不要なプレイヤー識別子を送らない。
+- 会話と行動のライフサイクル・世代を分離する。雑談だけでは現在の行動を取り消さない。
+- session・goalRevision・actionIdで古い判断を拒否。実行直前にも個体・ディメンション・体力・距離等を確認する。
+- providerの文字列をMinecraft commandやシェルとして実行しない。未知の操作と不完全な引数を両側で拒否する。
+- 通常観測は差分。挨拶のたびに世界状態をLLMへ送らない。
+- 推測で古いツールチェーンを更新しない。
 
-## 実装済み
+## 検証状況
 
-| Phase | 内容 | 確認状況 |
-| --- | --- | --- |
-| 0 | Forge環境固定、空MOD、開発クライアント、Prismへのjar導入 | ビルド・初期化ログ・Prism起動確認済み |
-| 1 | HTTPの固定ping/pong | `!agent ping` → `[Companion] pong` を実ゲームで確認 |
-| 2 | 名前付きCompanion、spawn/say/look/follow/stop/status、保存・重複防止 | 基本操作と再入場後の保持・重複防止を利用者が確認 |
-| 3 | ローカルSocial Brain、短い会話履歴、キー設定 | 日本語会話と「好きな色は青」の記憶を実ゲームで確認 |
-| 4 | 独立したDecisionProvider、mockとローカル構造化出力、漏洩テスト | 実モデルで追従・停止・look・低体力時停止を確認。自動実行なし |
-| 5 | 初回snapshot、連番付き差分、Daemonキャッシュ、再同期 | 実ゲームの移動・所持品・追従/停止の差分とDaemon再起動後の復旧を確認 |
+直近の自動検証はPython **50件成功**、Java **30件成功**、Forgeビルド成功。
+Pythonは予算管理時、JavaとForgeはExecutor変更時の結果。今回の資料見直しでは再実行していない。
+Pythonの既存HTTPエラーテストが一度Windowsの接続切断で失敗したが、再実行では全件成功した。
 
-最新MODは `forge-mod/build/libs/mc-ai-companion-0.0.5.jar`。
-Phase 5時点の自動テストは **Python 26件、Java 11件、計37件**。ビルド成功。
-Phase 3の実測会話RTTは約1.0～1.3秒、Phase 4の判断は約1.5～2.0秒。継続的な性能保証ではない。
+実ゲームで確認済み:
 
-## このPCの環境
+- Companion出現・追従・停止・注視・発話・状態表示、保存・再入場後の保持。
+- 会話と直前の会話内容の記憶、観測差分とDaemon再起動後の再同期。
+- AI判断からの追従、行動中の会話、判断中の停止で旧判断が実行されないこと。
+- 注視の完了、連続した会話2件の順序、会話→追従・注視・停止。
+- 近距離の追従修正後に移動すること、否定時にも追従が続くこと。
+
+実モデルで確認済み:
+
+- 会話の限定intentと否定・引用・条件・未対応操作などのケース。
+- 追従・停止・注視・低体力時のTactical判断。
+- 予算管理追加後もSocialのfollow_ownerとDecisionのfollowを生成。ゲームへactionは送らない独立検証。
+
+未確認・残る制限:
+
+- 0.0.8のPrism導入と実ゲーム確認。
+- 否定時の最終固定文面は自動テストとHTTPで確認済み、ゲームでの再確認は未実施。
+- 予算超過のゲーム内専用表示は未実装。API/ログに理由を出し、MODは一般的な失敗表示。
+- 厳密なtokenizerは未導入。UTF-8バイト数と枠の余裕で保守的に推定し、`utf8_estimate` と記録。将来 `TokenCounter` を注入可能。
+- 敵・体力・ディメンションの同期、死亡後の再spawn・未読込チャンクの重複防止、長時間安定性は実ゲームで網羅していない。
+- 再接続・応答逆転・重複配送・受付上限などの異常系は主に自動テストの範囲。
+
+## このPCの環境と設定
 
 | 項目 | 値 |
 | --- | --- |
 | リポジトリ | `C:\Users\dansaka\Work\Repository\mc-ai` |
 | JDK | Eclipse Temurin 8u504-b01、`.tools/jdk8u504-b01` |
-| Gradle | 5.6.4、公式wrapperと配布ZIPのSHA-256を固定 |
-| ForgeGradle | anatawa12版 `1.2-1.1.1` |
-| Forge | `1.7.10-10.13.4.1614-1.7.10` |
-| mappings | MCP `stable_12` |
-| Python | 3.14.0、Daemonは標準ライブラリのみ |
-| Prismインスタンス | `1.7.10-mod-basic` |
+| Gradle | 5.6.4、wrapperと配布ZIPのSHA-256固定 |
+| ForgeGradle / Forge | anatawa12版 `1.2-1.1.1` / `1.7.10-10.13.4.1614-1.7.10` |
+| mappings / Python | MCP `stable_12` / Python 3.14.0、Daemonは標準ライブラリのみ |
+| Prism | `1.7.10-mod-basic` |
 | ゲームディレクトリ | `%APPDATA%\PrismLauncher\instances\1.7.10-mod-basic\minecraft`（`.minecraft`ではない） |
-| Daemon | `http://127.0.0.1:8767` |
-| LM Studio API | `http://127.0.0.1:1234/v1`、認証有効 |
+| Daemon / LM Studio API | `http://127.0.0.1:8767` / `http://127.0.0.1:1234/v1`、LM Studioは認証有効 |
 | 利用者指定モデル | `unsloth/gemma-4-26b-a4b-it` |
 
-8766はこのPCで利用できず、起動時にWinError 10013、HTTP接続時に別サービスと思われる応答があった。
-そのためDaemonとPrism内の `config/mcaicompanion.cfg` を8767に合わせている。コード既定値は8766。
+8766はこのPCで利用できなかったため、Prismの `config/mcaicompanion.cfg` とDaemonは8767を使う。コード既定値は8766。
+OpenALFix導入前は利用者環境で毎回クラッシュしていた。`openalfix-1.0.0.jar` と既存ExcludeMobsを残す。
+OpenALFix導入後も音声処理のクラッシュ記録があり、完全解消とは断定しない。
 
-OpenALFix導入前は利用者のPrism環境で毎回クラッシュしたとの報告がある。既存の `openalfix-1.0.0.jar` を残すこと。
-OpenALFix導入後も作業中に一度音声処理のクラッシュを確認しており、完全解消とは断定しない。
-既存のExcludeMobsもそのまま残している。これらのMODを勝手に削除・変更しない。
+ローカル設定は `agent/config.local.json` と `agent/decision.local.json`。キーは `.tools/social-api-key.txt`。
+すべてGit管理外。内容を丸ごと表示してキーを漏らさない。両providerは同じキーファイルを参照するが設定は独立。
+環境変数 `MCAI_SOCIAL_API_KEY` / `MCAI_DECISION_API_KEY` がファイルより優先。キー入力は `.\scripts\set-social-api-key.ps1`。
 
-## 再開・起動手順
+予算設定（今回キーを出さず確認済み）:
 
-1. まず8767番で既存Daemonが動いていないか確認する。二重起動しない。
-2. LM Studioで上記モデルとAPIサーバーを起動する。モデル変更は利用者と相談する。
-3. リポジトリ直下のPowerShellでDaemonを起動する。
+| 設定 | Social | Decision |
+| --- | --- | --- |
+| context_window_tokens | 65,536 | 65,536 |
+| max_output_tokens | 256 | 256 |
+| prompt_budget_tokens | 8,192 | 4,096 |
+| history_budget_tokens | 4,096 | 省略＝0 |
+| safety_margin_tokens | 512 | 512 |
+
+65,536は前回LM Studioの実ロード長を確認した値。理論最大262,144をそのまま設定しない。ロード長の自動検出はない。
+`reasoning_effort: none` を使用。Gemmaの思考生成で出力256を使い切った経緯がある。
+
+## 再開・反映手順
+
+1. Git、関連プロセス、8767/1234の待受、Prismの有効jarを再確認する。
+2. 古いDaemonが動いていればコマンドと対象を照合して終了し、最新コードで起動する。LM Studioの指定モデル・APIも確認する。
+3. Executorをゲーム確認する場合はMinecraftが終了していることを確認し、Prismの0.0.7を `.jar.disabled` にして0.0.8を配置する。同一MODの複数バージョンを有効にしない。
+4. Prismを起動し、`!agent ping`、会話、追従・停止を確認する。
 
 ```powershell
 python agent/src/daemon.py --port 8767 --config agent/config.local.json --decision-config agent/decision.local.json
-```
-
-4. Prismの `1.7.10-mod-basic` を起動し、ワールドに入る。
-5. `!agent ping`、必要なら `!agent chat こんにちは` で確認する。
-
-観測は自動で始まる。ゲームの一時停止中は観測も止まり、15秒以上でstaleになる。
-状態確認やキャッシュからの判断検証中は、ワールドを一時停止しない。
-
-```powershell
-$observed = Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/state -Method Post -ContentType application/json -Body '{"version":1}'
-$observed | ConvertTo-Json -Depth 8
 ```
 
 ビルド・テスト:
@@ -198,79 +134,46 @@ python -m unittest discover -s agent/tests -v
 .\scripts\forge.ps1 build
 ```
 
-初回cloneでは `.\scripts\setup-jdk.ps1` → `.\scripts\forge.ps1 setupDecompWorkspace build`。
-`.tools`、ローカル設定、APIキーはcloneに含まれない。[Agent README](agent/README.md)を参照して準備する。
+初回cloneは `.\scripts\setup-jdk.ps1` → `.\scripts\forge.ps1 setupDecompWorkspace build`。
+`.tools`、ローカル設定、APIキーはcloneに含まれない。[Agent README](agent/README.md) を参照。
+開発起動は `.\scripts\forge.ps1 runClient`。起動中のjarロックを避けるため再ビルド前にゲームを終了する。
 
-開発起動は `.\scripts\forge.ps1 runClient`。起動中はjarがロックされるため、再ビルド前にゲームを終了する。
-Prismのjar更新時も保存してゲームを終了し、旧jarを `.jar.disabled` にして新jarを配置する。同じMODの複数バージョンを有効にしない。
+ゲーム一時停止中は観測も止まり、15秒以上でstaleになる。状態確認中はワールドを一時停止しない。
+Daemon再起動で会話履歴・キャッシュ・goalは消える。ワールド保存済みのCompanionは残り、観測は再同期する。
 
-## APIキーとローカル設定
+## 主要コードと状態保持
 
-- Social設定: `agent/config.local.json`。
-- Decision設定: `agent/decision.local.json`。
-- このPCのキー保存先: `.tools/social-api-key.txt`。
-- 以上はGit管理外。キーの内容をチャット・ログ・ドキュメントへ書かない。
-- 現在は両providerが同じLM Studio用キーを参照しているが、設定は独立している。
-- 環境変数はSocialが `MCAI_SOCIAL_API_KEY`、Decisionが `MCAI_DECISION_API_KEY`。ファイルより優先される。
-- キー変更は `.\scripts\set-social-api-key.ps1` で非表示入力。保存先は平文のローカルファイル。
-- 設定・キー変更後はDaemonを再起動する。
+- `agent/src/context_budget.py`: 予算検証・推定・履歴の削除。
+- `agent/src/social.py` / `decision.py`: 独立したprovider、会話とTacticalの入力・出力検証。
+- `agent/src/goals.py`: 有界の目的管理・推論worker・世代・実行結果。
+- `agent/src/daemon.py` / `state_cache.py`: HTTPと観測キャッシュ。
+- `forge-mod/src/main/java/local/mcai/` の `PingBridge`・`ConversationQueue`: 会話FIFOと返信の世代。
+- 同 `ActionBridge`・`GoalState`・`ActionProtocol`: 実行権限、世代管理、制御と結果通知。
+- 同 `IoExecutors`: 4系統の通信Executor。
+- 同 `CompanionEntity`・`CompanionCommands`: 個体・経路探索・操作。
+- 同 `ObservationBridge`・`ObservationDiff`: 観測・差分・ACK・再同期。
+- `protocol/` と各tests: 通信仕様・fixture・回帰テスト。
 
-Gemmaは最初のテストで思考生成が256トークンを使い切った。通常会話と判断では `reasoning_effort: none` を指定して実測確認している。
+観測は毎秒、ACK済み位置から2ブロック以上の累積移動で座標送信。無変更でも約5～6秒ごとに空イベント。
+連番不一致・通信失敗・Daemon再起動では5秒後に新sessionでsnapshot。個体・ディメンション変更でもsnapshot。
+キャッシュは32セッション・各100イベント。会話は32セッションで予算内の直近往復を保持。両方メモリのみ。
+会話は `!agent forget`・再入場・Daemon再起動で消える。Companionと所有者対応はワールド保存、再入場時taskはidle。
+結果通知は有界キュー・最大3回の試行で、再起動をまたぐ配送保証はない。
 
-## 主要コードの場所
+## 次の機能候補（未着手）
 
-| ファイル | 役割 |
-| --- | --- |
-| `agent/src/daemon.py` | HTTPルーティング・起動設定 |
-| `agent/src/social.py` | SocialProvider・人格・短い履歴 |
-| `agent/src/decision.py` | 匿名化、DecisionProvider、構造化出力・検証 |
-| `agent/src/state_cache.py` | snapshot、連番・差分、原子的な更新、stale判定 |
-| `forge-mod/src/main/java/local/mcai/PingBridge.java` | ping/chat/forget、非同期通信とゲーム側への応答反映 |
-| `forge-mod/src/main/java/local/mcai/CompanionEntity.java` | Entity、標準経路探索を使った追従、task |
-| `forge-mod/src/main/java/local/mcai/CompanionCommands.java` | 手動操作 |
-| `forge-mod/src/main/java/local/mcai/ObservationBridge.java` | ゲームスレッドでの観測、通信、ACKと再同期 |
-| `forge-mod/src/main/java/local/mcai/ObservationDiff.java` | Minecraft非依存の差分生成 |
-| `protocol/README.md`・`protocol/examples/` | プロトコルとfixture |
+follow/stop/lookのAI接続は完了しているため、再実装しない。
+新しいGame ActionsはCompanionのインベントリとpickup等を小さく追加するのが候補だが、利用者の選択はまだない。
+goto・attack・mine・place・craft・smelt・deposit、長期記憶、JEV/クラウドprovider、GUI設定、マルチプレイヤーは未実装。
+高度な割り込み分類、予約実行、進捗を用いた会話も後続。
 
-## 同期・記憶の要点
+## ログ・成果物の参照
 
-- 観測は毎秒。座標はACK済み位置からの累積移動が2ブロック以上で送る。
-- 無変更時は約5～6秒ごとに空イベントを送る。LLMは呼び出さない。
-- セッションと連番を使い、ACKが来るまでは差分基準を進めない。
-- 失敗・連番不一致・Daemon再起動では5秒後に新しいセッションでsnapshotを送る。
-- Companionの有無・個体ID・ディメンション変更でもsnapshotを使う。
-- キャッシュは最大32セッション、各100イベント、永続化なし。
-- 会話は別のセッション管理。直近6往復・約4000文字まで、最大32セッション、永続化なし。
-- `!agent forget` で現在の会話を消す。ワールド再入場・Daemon再起動でも会話を引き継がない。
-- Companion本体と所有者対応はワールドに保存される。再入場時のtaskはidleに戻す。
+- 既存Daemonのログ: `.tools/intent-final.stderr.log` / `.tools/intent-final.stdout.log`。PID記録 `.tools/intent-daemon.pid` は現在性を保証しない。
+- 過去の追従修正検証: `.tools/intent-follow-fix.stderr.log`。Phase 5再同期: `.tools/phase5-reconnect.stderr.log`。
+- ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`。
+- 配置済み0.0.7のSHA-256: `415784220406FF0D0CC82018B88770D0053DDC938404BD3E1335E1493AD89907`。
+- 未配置0.0.8のSHA-256: `17EB48F270C83390623D5EED924FEEBADDA1EDC214B322ACF3EA588D8A515865`。
+- 修正前jarはPrism内の `mc-ai-companion-0.0.7-before-follow-fix.jar.disabled` として保持。
 
-## 未確認・未実装・次の検討事項
-
-実ゲームでは未確認:
-
-- 敵の出入り、体力変化、ディメンション変更の同期（自動テストまたはコード確認の範囲）。
-- Companion死亡後の再spawn、未読込チャンクにいる場合の重複防止。
-- 会話履歴消去・再入場時のセッション分離（自動テスト済み）。
-- 長時間プレイでの音声・経路探索・同期の安定性。
-
-未実装:
-
-- SocialのintentからTacticalへ目的を渡す接続。
-- 判断結果のForgeへの配送、Forge側のaction schema検証、実行直前の状態再確認、action result通知。
-- Companionのインベントリ、pickup/attack/mine/place/craft/smelt/deposit、goto。
-- JEV・クラウドのDecisionProvider、長期記憶、GUI設定、マルチプレイヤー。
-
-次は仕様上Phase 6のGame Actions。ただし一度に全操作を作らない。
-自動操作を目指すなら、まず実装済みのfollow/stop/lookで「判断→両側検証→実行→結果通知」を小さく接続し、古い判断の実行や会話情報の混入を防ぐ設計を確認するのが候補。
-新しいゲーム操作を先に追加する場合は、pickup等を1つ選び、その前提となるCompanionインベントリと結果通知の範囲を決める。
-これらは次回の提案であり、今回まだ着手していない。
-
-## 切り上げ時点のプロセス
-
-メモ作成時点ではMinecraftと検証用Daemonが起動していた。この記録作業では終了させていない。
-Daemonの当時のPIDは31796で、`.tools/phase5-daemon.pid` にも記録されている。PIDは再利用されるため、次回この番号だけで停止しない。
-終了する場合はMinecraftを保存して終了し、対象がこのリポジトリの `agent/src/daemon.py` であることを確認してDaemonを止める。通常の手動起動ではCtrl+Cで終了できる。
-Daemonを止めると会話履歴とキャッシュは消えるが、ワールド保存済みのCompanionは残る。
-
-直近ログは `.tools/phase5-reconnect.stderr.log`、ビルドログは `.tools/phase5-build.log`。
-ゲームのMOD初期化・観測ログはPrism内の `minecraft/logs/fml-client-latest.log`。
+古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。
