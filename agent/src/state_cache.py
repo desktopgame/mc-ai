@@ -49,10 +49,11 @@ def dropped_item(value):
     return {"type": kind, "distance": number(value["distance"], 0, 16)}
 
 
-TASKS = ("idle", "follow", "look", "pickup")
+TASKS = ("idle", "follow", "look", "pickup", "deposit")
 RESULTS = ("none", "stopped", "following", "looking", "near_owner", "owner_unavailable",
            "look_completed", "companion_died", "owner_out_of_range", "path_not_found", "path_retrying",
-           "picking_up", "pickup_completed", "no_item_in_range", "inventory_full")
+           "picking_up", "pickup_completed", "no_item_in_range", "inventory_full",
+           "depositing", "deposit_completed", "inventory_empty", "owner_inventory_full")
 
 
 def task(value):

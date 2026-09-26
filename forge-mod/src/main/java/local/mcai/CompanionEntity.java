@@ -36,6 +36,7 @@ public final class CompanionEntity extends EntityCreature {
         tasks.addTask(0, new EntityAISwimming(this));
         tasks.addTask(1, new FollowTask());
         tasks.addTask(2, new PickupTask());
+        tasks.addTask(3, new DepositTask());
     }
 
     @Override protected void applyEntityAttributes() {
@@ -63,6 +64,15 @@ public final class CompanionEntity extends EntityCreature {
     }
     public void look() { stop(); task = "look"; lookTicks = 60; result("looking"); }
     public void pickup() { stop(); task = "pickup"; result("picking_up"); }
+    public void deposit() { stop(); task = "deposit"; result("depositing"); }
+
+    public int carriedCount() {
+        int total = 0;
+        for (ItemStack stack : inventory) {
+            if (stack != null && stack.stackSize > 0) { total += stack.stackSize; }
+        }
+        return total;
+    }
 
     /** Registry name to count, for observation only. NBT and damage values are not reported. */
     public Map<String, Integer> inventoryCounts() {
@@ -110,6 +120,23 @@ public final class CompanionEntity extends EntityCreature {
             inventory[i] = slot; stack.stackSize -= move; stored += move;
         }
         return stored;
+    }
+
+    /** Vanilla insertion copies every stack it stores, so passing our own instances is safe. */
+    private void handOver(EntityPlayer target) {
+        int moved = 0;
+        boolean remaining = false;
+        for (int i = 0; i < SLOTS; i++) {
+            ItemStack slot = inventory[i];
+            if (slot == null || slot.stackSize <= 0) { inventory[i] = null; continue; }
+            int before = slot.stackSize;
+            target.inventory.addItemStackToInventory(slot);
+            moved += before - slot.stackSize;
+            if (slot.stackSize <= 0) { inventory[i] = null; } else { remaining = true; }
+        }
+        stop();
+        // Anything left over means the owner ran out of space, even when part of it was handed over.
+        result(remaining || moved <= 0 ? "owner_inventory_full" : "deposit_completed");
     }
 
     private void collect(EntityItem item) {
@@ -209,6 +236,28 @@ public final class CompanionEntity extends EntityCreature {
                 boolean found = getNavigator().tryMoveToEntityLiving(target, 1.0D);
                 boolean exhausted = pathRetry.exhausted(found);
                 result(found ? "following" : exhausted ? "path_not_found" : "path_retrying");
+            }
+        }
+    }
+
+    private final class DepositTask extends EntityAIBase {
+        private int retryTicks;
+        DepositTask() { setMutexBits(3); }
+        @Override public boolean shouldExecute() { return task.equals("deposit") && owner() != null; }
+        @Override public boolean continueExecuting() { return shouldExecute(); }
+        @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
+        @Override public void resetTask() { getNavigator().clearPathEntity(); }
+        @Override public void updateTask() {
+            EntityPlayer target = owner();
+            if (target == null) { return; }
+            if (carriedCount() <= 0) { stop(); result("inventory_empty"); return; }
+            getLookHelper().setLookPositionWithEntity(target, 30.0F, 30.0F);
+            if (getDistanceSqToEntity(target) <= 4.0D) { getNavigator().clearPathEntity(); handOver(target); return; }
+            if (--retryTicks <= 0) {
+                retryTicks = 20;
+                boolean found = getNavigator().tryMoveToEntityLiving(target, 1.0D);
+                boolean exhausted = pathRetry.exhausted(found);
+                result(found ? "depositing" : exhausted ? "path_not_found" : "path_retrying");
             }
         }
     }

@@ -162,6 +162,35 @@ class GoalTests(unittest.TestCase):
         self.assertNotIn("item-", sent)
         self.assertNotIn("minecraft", sent)
 
+    def test_deposit_goal_uses_the_carried_count_from_observations(self):
+        states, manager = self.create()
+        data = snapshot(); data["sequence"] = 1
+        data["state"]["companion"]["inventory"] = {"minecraft:sand": 2, "minecraft:dirt": 1}
+        states.update(data, True)
+        ready = wait_for(manager, request(1, "deposit_items"))
+        self.assertEqual(ready["action"]["decision"], {"action": "deposit"})
+        self.assertEqual(ready["action"]["reasonCode"], "goal_deposit")
+        self.report(manager, ready, "running")
+        self.report(manager, ready, "failed", "owner_inventory_full")
+        self.assertEqual(manager.update(request(1, "deposit_items"))["status"], "failed")
+        # Everything was handed over already: deposit must not be chosen again.
+        data["sequence"] = 2; data["state"]["companion"]["inventory"] = {}
+        states.update(data, True)
+        empty = wait_for(manager, request(2, "deposit_items"))
+        self.assertEqual(empty["action"]["decision"], {"action": "stop"})
+        self.assertEqual(empty["action"]["reasonCode"], "inventory_empty")
+
+    def test_deposit_input_carries_only_a_count(self):
+        provider = DelayedProvider(); states, manager = self.create(provider)
+        data = snapshot(); data["sequence"] = 1
+        data["state"]["companion"]["inventory"] = {"minecraft:sand": 2, "minecraft:dirt": 1}
+        states.update(data, True)
+        manager.update(request(1, "deposit_items"))
+        self.assertTrue(provider.started.wait(1))
+        provider.release.set(); self.join(manager)
+        self.assertEqual(provider.inputs[0]["state"]["companion"]["carrying"], 3)
+        self.assertNotIn("minecraft", json.dumps(provider.inputs[0]))
+
     def test_expiry_and_cancellation_without_fresh_observations(self):
         now = [0.0]; _, manager = self.create(clock=lambda: now[0])
         wait_for(manager, request()); now[0] = 11

@@ -94,7 +94,7 @@ public final class PingClient {
             if (o.entrySet().size() != 4) { throw new IOException("Unexpected social fields"); }
             String intent = ActionProtocol.string(o, "intent");
             if (!(intent.equals("none") || intent.equals("follow_owner") || intent.equals("stop")
-                    || intent.equals("look_at_owner") || intent.equals("pickup_item"))) {
+                    || intent.equals("look_at_owner") || intent.equals("pickup_item") || intent.equals("deposit_items"))) {
                 throw new IOException("Unsupported intent");
             }
             return new Reply(say, intent);

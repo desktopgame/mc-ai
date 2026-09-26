@@ -8,6 +8,26 @@ SocialとDecisionそれぞれにコンテキスト長・出力上限・入力予
 systemと今回の発話だけで上限を超える場合は、モデルへ送信せず理由を返す。現在の計数はUTF-8ベースの保守的な推定。
 設定項目・既定値・制約は [Agent README](agent/README.md#コンテキスト予算) を参照。MODの変更は不要。
 
+## 所有者への受け渡し — 0.0.11（Phase 6の2番目の操作）
+
+拾ったものを所有者へ渡せるようになった。Phase 6の残り（attack / mine / place / craft / smelt）は未実装。
+
+| 入力 | 動作 |
+| --- | --- |
+| `!agent chat 持ってるもの渡して` | Socialが `deposit_items` を生成し、判断と検証を経て所有者へ渡す |
+| `!agent do deposit` | AI判断経由で受け渡しを依頼 |
+| `!agent deposit` | LLMを使わない手動操作。何も持っていなければその場で断る |
+
+**渡すのは所持品すべて**で、pickupと同様に品物は選べない（「砂だけ渡して」等は受け付けず、まとめて渡せると返答する）。
+判断モデルへ渡すのは所持点数だけで、アイテム名は渡さない。観測スキーマは変更していない。
+
+所有者へ2ブロック以内まで近づいてから渡す。所有者の持ち物がいっぱいで渡し切れない場合は `owner_inventory_full` で失敗し、
+残りはCompanionが持ったままになる。空になったときだけ成功とする。実行直前に所持品が空なら `inventory_empty` で停止する。
+
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.11.jar`。Daemonも同じ版へ更新する。
+通信仕様は [行動ライフサイクル](protocol/action-lifecycle.md#phase-6の2番目の操作--deposit0011) を参照。
+2026-09-26: Python62件・Java36件のテストとビルドに成功。実ゲームでの受け渡し・所有者満杯時の挙動は未検証。
+
 ## アイテムの拾得 — 0.0.10（Phase 6の最初の操作）
 
 Companionが近くに落ちているアイテムを拾えるようになった。Phase 6の残り（attack / mine / place / craft / smelt / deposit）は未実装。

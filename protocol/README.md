@@ -45,20 +45,23 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 必須入力:
 
 - `version`: 整数1。
-- `goal.type`: `follow_owner / stop / look_at_owner / pickup_item` のいずれか。自由文は受け渡さない。
+- `goal.type`: `follow_owner / stop / look_at_owner / pickup_item / deposit_items` のいずれか。自由文は受け渡さない。
 - `state.companion.health`: 有限の0～20。
 - `state.companion.position` と `state.owner.position`: 有限の3要素座標（XZは±30000000、Yは±2048以内）。
+- `state.companion.carrying`: 省略可（既定0）。Companionの所持点数（0～100000の整数）。アイテム名はモデルへ渡さない。
 - `state.items`: 省略可。`count`（0～16の整数）と `nearestDistance`（0～16、count=0ならnull）だけ。アイテム名・IDはモデルへ渡さない。
-- `availableActions`: `follow / stop / look / pickup` の空でない部分集合。未知値・重複を拒否する。
+- `availableActions`: `follow / stop / look / pickup / deposit` の空でない部分集合。未知値・重複を拒否する。
 
 入力から上記フィールドだけを新しいJSONに再構成する。余分なpersona・会話・名前等は捨て、実名はモデルへ渡さない。
 出力は `version / decision / reasonCode / executed`。
-`decision` は `{"action":"stop"}` / `{"action":"pickup"}` または `{"action":"follow","target":"owner"}` / `{"action":"look","target":"owner"}`。
-`reasonCode` は `goal_follow / goal_stop / goal_look / goal_pickup / owner_near / low_health / owner_out_of_range / no_item_in_range / unavailable_action` のみ。
+`decision` は `{"action":"stop"}` / `{"action":"pickup"}` / `{"action":"deposit"}` または `{"action":"follow","target":"owner"}` / `{"action":"look","target":"owner"}`。
+`reasonCode` は `goal_follow / goal_stop / goal_look / goal_pickup / goal_deposit / owner_near / low_health / owner_out_of_range / no_item_in_range / inventory_empty / unavailable_action` のみ。
 
 体力6以下はstopのみ、followは所有者まで32ブロック以内。0.0.7からは2ブロック以内でもfollow/owner_nearで追従状態を維持し、移動だけを保留する。目的と一致しないfollow/look、未許可の操作、余分なパラメーターは拒否する。
 pickupはtargetを持たない。どのアイテムを拾うかはモデルではなくForgeが決め、観測範囲内の最も近い落下物だけを対象とする。
 `count` が0のpickupは拒否し、`no_item_in_range` のstopだけを認める。pickupもfollowと同じ32ブロックの制限を受ける。
+depositもtargetを持たず、所持品すべてを所有者へ渡す。品物は選べない。
+`carrying` が0のdepositは拒否し、`inventory_empty` のstopだけを認める。32ブロックの制限はpickupと同じ。
 入力不正は400、判断provider未設定・busy・タイムアウト・不正出力は503でdecisionを返さない。
 
 `executed: false` は判断の提案だけであることを示す。Phase 5では、明示的なstateの代わりに `session` を指定すればキャッシュの状態を使える。stateとsessionの同時指定は400、古い状態・Companion不在・不明なセッションは409。自動操作は行わない。

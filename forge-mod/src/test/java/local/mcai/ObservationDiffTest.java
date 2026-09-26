@@ -70,7 +70,11 @@ public class ObservationDiffTest {
         String events = new ObservationDiff(old, now).events.toString();
         assertTrue(events.contains("inventory_changed")); assertTrue(events.contains("\"entity\":\"companion\""));
         assertTrue(events.contains("task_completed"));
-        now = state(); now.getAsJsonObject("companion").addProperty("result", "inventory_full");
-        assertTrue(new ObservationDiff(old, now).events.toString().contains("task_failed"));
+        for (String failure : new String[] {"inventory_full", "inventory_empty", "owner_inventory_full"}) {
+            now = state(); now.getAsJsonObject("companion").addProperty("result", failure);
+            assertTrue(failure, new ObservationDiff(old, now).events.toString().contains("task_failed"));
+        }
+        now = state(); now.getAsJsonObject("companion").addProperty("result", "deposit_completed");
+        assertTrue(new ObservationDiff(old, now).events.toString().contains("task_completed"));
     }
 }

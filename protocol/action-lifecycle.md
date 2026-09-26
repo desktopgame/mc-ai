@@ -1,5 +1,19 @@
 # Action lifecycle — MOD 0.0.6 / protocol 1
 
+## Phase 6の2番目の操作 — deposit（0.0.11）
+
+目的 `deposit_items`、判断結果 `{"action":"deposit"}`、理由 `goal_deposit / inventory_empty` を追加した。
+depositもtargetを持たず、**所持品すべて**を所有者へ渡す。pickupと同様に品物は選べない。
+判断モデルへ渡すのは所持点数 `companion.carrying` だけで、アイテム名は渡さない。観測スキーマの変更はない（既存のCompanionインベントリから算出する）。
+
+- Daemonは `carrying` が0のdepositを拒否し、`inventory_empty` のstopだけを認める。32ブロックの制限はpickupと同じ。
+- Forgeは実行直前に所持点数を再確認し、空なら `inventory_empty` でfailedにする。
+- 所有者へ2ブロック以内まで近づいてから渡す。所有者の持ち物がいっぱいで渡し切れない場合は `owner_inventory_full`。
+  一部だけ渡せた場合も残りを持ったままなので `owner_inventory_full` とし、空になったときだけ `deposit_completed` にする。
+- 実行結果の理由に `inventory_empty / owner_inventory_full` を追加した。経路失敗は既存の `path_not_found` を使う。
+
+手動確認は `!agent deposit`（Daemonを経由しない）と `!agent do deposit`（AI判断経由）。
+
 ## Phase 6の最初の操作 — pickup（0.0.10）
 
 目的 `pickup_item`、判断結果 `{"action":"pickup"}`、理由 `goal_pickup / no_item_in_range` を追加した。

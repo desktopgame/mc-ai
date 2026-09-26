@@ -41,7 +41,7 @@ class IntentTests(unittest.TestCase):
 
     def test_opt_in_and_all_intents_have_no_executable_actions(self):
         provider = IntentProvider(); brain = SocialBrain(provider)
-        for intent in ("none", "follow_owner", "stop", "look_at_owner", "pickup_item"):
+        for intent in ("none", "follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items"):
             provider.output["intent"] = intent
             response = turn(payload(), brain)
             self.assertEqual(response["intent"], intent)

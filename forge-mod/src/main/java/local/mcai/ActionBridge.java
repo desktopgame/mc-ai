@@ -98,16 +98,18 @@ public final class ActionBridge {
         event.setCanceled(true);
         synchronize(event.player);
         String[] parts = message.split("\\s+");
-        if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop") || parts[2].equals("pickup"))) {
-            reply("使い方: !agent do follow / look / stop / pickup"); return;
+        if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop")
+                || parts[2].equals("pickup") || parts[2].equals("deposit"))) {
+            reply("使い方: !agent do follow / look / stop / pickup / deposit"); return;
         }
         requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner"
-                : parts[2].equals("pickup") ? "pickup_item" : "stop", null);
+                : parts[2].equals("pickup") ? "pickup_item" : parts[2].equals("deposit") ? "deposit_items" : "stop", null);
     }
 
     private boolean requestGoal(EntityPlayerMP player, String goal, IntentOrder.Ticket ticket) {
         synchronize(player);
-        if (!(goal.equals("follow_owner") || goal.equals("look_at_owner") || goal.equals("stop") || goal.equals("pickup_item"))) { return false; }
+        if (!(goal.equals("follow_owner") || goal.equals("look_at_owner") || goal.equals("stop")
+                || goal.equals("pickup_item") || goal.equals("deposit_items"))) { return false; }
         if (goal.equals("stop")) {
             // A delayed natural stop must not cancel a newer explicit action.
             if (ticket != null) { intentOrder.accept(ticket); cancelActive("replaced"); state.replace(null); nextPoll = 0; }
@@ -184,10 +186,12 @@ public final class ActionBridge {
             }
             // Items are volatile: re-check just before execution, not only when the decision was made.
             if (action.type.equals("pickup") && !companion.hasItemInRange()) { fail("no_item_in_range"); return; }
+            if (action.type.equals("deposit") && companion.carriedCount() <= 0) { fail("inventory_empty"); return; }
             active = companion;
             if (action.type.equals("follow")) { companion.follow(); result("running", "accepted"); debugReply("追従を始めます。"); }
             else if (action.type.equals("look")) { companion.look(); result("running", "accepted"); debugReply("そちらを向きます。"); }
             else if (action.type.equals("pickup")) { companion.pickup(); result("running", "accepted"); debugReply("落ちているものを拾いに行きます。"); }
+            else if (action.type.equals("deposit")) { companion.deposit(); result("running", "accepted"); debugReply("持っているものを渡しに行きます。"); }
             else {
                 companion.stop(); state.finish(state.session, state.revision, action.id, "succeeded");
                 result("succeeded", "completed"); active = null; debugReply("判断結果に従って待機します。");
@@ -212,9 +216,10 @@ public final class ActionBridge {
             else if (active.lastResult().equals("path_not_found")) { fail("path_not_found"); }
             else if (active.task().equals("idle")) {
                 String last = active.lastResult();
-                boolean success = last.equals("look_completed") || last.equals("pickup_completed");
+                boolean success = last.equals("look_completed") || last.equals("pickup_completed") || last.equals("deposit_completed");
                 String reason = success ? "completed"
-                        : last.equals("no_item_in_range") || last.equals("inventory_full") ? last : "owner_unavailable";
+                        : last.equals("no_item_in_range") || last.equals("inventory_full")
+                          || last.equals("inventory_empty") || last.equals("owner_inventory_full") ? last : "owner_unavailable";
                 state.finish(state.session, state.revision, state.actionId, success ? "succeeded" : "failed");
                 result(success ? "succeeded" : "failed", reason); active = null;
             }

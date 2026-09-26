@@ -12,10 +12,11 @@ from urllib import request, error, parse
 from context_budget import ContextBudget
 
 LOG = logging.getLogger("mcai.decision")
-GOALS = {"follow_owner": "follow", "stop": "stop", "look_at_owner": "look", "pickup_item": "pickup"}
-ACTIONS = ("follow", "stop", "look", "pickup")
-REASONS = ("goal_follow", "goal_stop", "goal_look", "goal_pickup", "owner_near", "low_health",
-           "owner_out_of_range", "no_item_in_range", "unavailable_action")
+GOALS = {"follow_owner": "follow", "stop": "stop", "look_at_owner": "look",
+         "pickup_item": "pickup", "deposit_items": "deposit"}
+ACTIONS = ("follow", "stop", "look", "pickup", "deposit")
+REASONS = ("goal_follow", "goal_stop", "goal_look", "goal_pickup", "goal_deposit", "owner_near", "low_health",
+           "owner_out_of_range", "no_item_in_range", "inventory_empty", "unavailable_action")
 SYSTEM = (
     "Choose exactly one action from availableActions using only the supplied goal and state. "
     "The player is always the anonymous alias owner. Do not request or produce reasoning text. "
@@ -26,6 +27,8 @@ SYSTEM = (
     "For look_at_owner choose look owner/goal_look. "
     "For pickup_item: if items.count is 0 choose stop/no_item_in_range; otherwise choose pickup/goal_pickup. "
     "pickup takes no target: the game collects the nearest observed item itself. "
+    "For deposit_items: if companion.carrying is 0 choose stop/inventory_empty; otherwise choose deposit/goal_deposit. "
+    "deposit takes no target: the companion hands its whole inventory to the owner. "
     "If the desired action is unavailable, "
     "choose stop/unavailable_action if available. Output only the specified JSON object."
 )
@@ -34,7 +37,7 @@ DECISION_SCHEMA = {
     "properties": {
         "decision": {"anyOf": [
             {"type": "object", "additionalProperties": False,
-             "properties": {"action": {"type": "string", "enum": ["stop", "pickup"]}}, "required": ["action"]},
+             "properties": {"action": {"type": "string", "enum": ["stop", "pickup", "deposit"]}}, "required": ["action"]},
             {"type": "object", "additionalProperties": False,
              "properties": {"action": {"type": "string", "enum": ["follow", "look"]},
                             "target": {"type": "string", "enum": ["owner"]}}, "required": ["action", "target"]}
@@ -62,6 +65,13 @@ def position(value):
     if not isinstance(value, list) or len(value) != 3:
         raise ValueError("invalid_position")
     return [number(value[0], -30000000, 30000000), number(value[1], -2048, 2048), number(value[2], -30000000, 30000000)]
+
+
+def carried(value):
+    """How many items the companion holds. Never the item names it is carrying."""
+    if type(value) is not int or not 0 <= value <= 100000:
+        raise ValueError("invalid_carrying")
+    return value
 
 
 def items_summary(value):
@@ -98,7 +108,8 @@ def sanitize(payload):
         raise ValueError("duplicate_available_actions")
     return {"goal": {"type": goal["type"]},
             "state": {"companion": {"health": number(state["companion"].get("health"), 0, 20),
-                                     "position": position(state["companion"].get("position"))},
+                                     "position": position(state["companion"].get("position")),
+                                     "carrying": carried(state["companion"].get("carrying", 0))},
                       "owner": {"position": position(state["owner"].get("position"))},
                       "items": items_summary(state.get("items"))},
             "availableActions": list(actions)}
@@ -116,7 +127,7 @@ def validate_decision(value, payload):
     if not isinstance(action, dict) or type(action.get("action")) is not str or action["action"] not in payload["availableActions"]:
         raise DecisionError("unknown_or_unavailable_action")
     kind = action["action"]
-    if kind in ("stop", "pickup"):
+    if kind in ("stop", "pickup", "deposit"):
         if set(action) != {"action"}:
             raise DecisionError("invalid_parameters")
     elif set(action) != {"action", "target"} or action.get("target") != "owner":
@@ -134,6 +145,11 @@ def validate_decision(value, payload):
             raise DecisionError("no_item_to_pick_up")
         if not 0 <= distance_squared(payload) <= 1024:
             raise DecisionError("unsafe_pickup_distance")
+    if kind == "deposit":
+        if payload["state"]["companion"]["carrying"] < 1:
+            raise DecisionError("nothing_to_deposit")
+        if not 0 <= distance_squared(payload) <= 1024:
+            raise DecisionError("unsafe_deposit_distance")
     return copy.deepcopy(value)
 
 
@@ -141,7 +157,8 @@ class MockDecisionProvider:
     def decide(self, payload):
         goal = payload["goal"]["type"]
         action = GOALS[goal]
-        reason = {"follow": "goal_follow", "stop": "goal_stop", "look": "goal_look", "pickup": "goal_pickup"}[action]
+        reason = {"follow": "goal_follow", "stop": "goal_stop", "look": "goal_look",
+                  "pickup": "goal_pickup", "deposit": "goal_deposit"}[action]
         if payload["state"]["companion"]["health"] <= 6:
             action, reason = "stop", "low_health"
         elif action == "follow" and distance_squared(payload) <= 4:
@@ -150,12 +167,14 @@ class MockDecisionProvider:
             action, reason = "stop", "owner_out_of_range"
         elif action == "pickup" and payload["state"]["items"]["count"] < 1:
             action, reason = "stop", "no_item_in_range"
-        elif action == "pickup" and distance_squared(payload) > 1024:
+        elif action == "deposit" and payload["state"]["companion"]["carrying"] < 1:
+            action, reason = "stop", "inventory_empty"
+        elif action in ("pickup", "deposit") and distance_squared(payload) > 1024:
             action, reason = "stop", "owner_out_of_range"
         if action not in payload["availableActions"]:
             action, reason = "stop", "unavailable_action"
         decision = {"action": action}
-        if action not in ("stop", "pickup"):
+        if action not in ("stop", "pickup", "deposit"):
             decision["target"] = "owner"
         return {"decision": decision, "reasonCode": reason}
 

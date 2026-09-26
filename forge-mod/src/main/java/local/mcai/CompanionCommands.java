@@ -33,7 +33,7 @@ public final class CompanionCommands {
 
     private void execute(EntityPlayerMP player, DebugCommand command) {
         if (command.type.equals("help")) {
-            reply(player, "!agent spawn / follow / stop / look / pickup / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop|pickup");
+            reply(player, "!agent spawn / follow / stop / look / pickup / deposit / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop|pickup|deposit");
             return;
         }
         CompanionEntity companion = find(player);
@@ -53,13 +53,18 @@ public final class CompanionCommands {
         } else {
             if (companion == null) { reply(player, "Companionが読み込まれていません。!agent spawn で確認してください。"); return; }
             if (companion.worldObj != player.worldObj) { reply(player, "Companionは別のディメンションにいます。"); return; }
-            if (command.type.equals("follow") || command.type.equals("look") || command.type.equals("pickup")) { actions.manualOverride(player); }
+            if (command.type.equals("follow") || command.type.equals("look") || command.type.equals("pickup")
+                    || command.type.equals("deposit")) { actions.manualOverride(player); }
             if (command.type.equals("follow")) { companion.follow(); reply(player, "ついていきます。"); }
             else if (command.type.equals("stop")) { companion.stop(); reply(player, "ここで待ちます。"); }
             else if (command.type.equals("look")) { companion.look(); reply(player, "そちらを向きます。"); }
             else if (command.type.equals("pickup")) {
                 if (!companion.hasItemInRange()) { reply(player, "近くに拾えるアイテムがありません。"); return; }
                 companion.pickup(); reply(player, "落ちているものを拾いに行きます。");
+            }
+            else if (command.type.equals("deposit")) {
+                if (companion.carriedCount() <= 0) { reply(player, "今は何も持っていません。"); return; }
+                companion.deposit(); reply(player, "持っているものを渡しに行きます。");
             }
             else if (command.type.equals("say")) { reply(player, command.text); }
             else if (command.type.equals("status")) {

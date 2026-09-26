@@ -45,7 +45,7 @@ public class IntentTest {
     /** Every intent the daemon may emit must round-trip, or the reply fails as a transport error. */
     @Test public void everySupportedIntentIsAccepted() throws Exception {
         String template = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"%s\"}";
-        for (String intent : new String[] {"none", "follow_owner", "stop", "look_at_owner", "pickup_item"}) {
+        for (String intent : new String[] {"none", "follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items"}) {
             assertEquals(intent, PingClient.parseSocialReply(String.format(template, intent)).intent);
         }
     }

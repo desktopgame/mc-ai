@@ -88,6 +88,22 @@ public class LifecycleTest {
         assertFalse(a.safe("pickup_item", "c", 0, 20, 1025));
         assertFalse(a.safe("pickup_item", "changed", 0, 20, 64));
     }
+    @Test public void depositMatchesOnlyItsGoalAndKeepsTheOwnerLeash() {
+        JsonObject o = action();
+        o.getAsJsonObject("decision").remove("target");
+        o.getAsJsonObject("decision").addProperty("action", "deposit");
+        o.addProperty("reasonCode", "goal_deposit");
+        ActionProtocol a = new ActionProtocol(o);
+        assertTrue(a.safe("deposit_items", "c", 0, 20, 64));
+        assertFalse(a.safe("pickup_item", "c", 0, 20, 64));
+        assertFalse(a.safe("follow_owner", "c", 0, 20, 64));
+        assertFalse(a.safe("deposit_items", "c", 0, 6, 64));
+        assertFalse(a.safe("deposit_items", "c", 0, 20, 1025));
+        JsonObject withTarget = action();
+        withTarget.getAsJsonObject("decision").addProperty("action", "deposit");
+        withTarget.addProperty("reasonCode", "goal_deposit");
+        reject(withTarget);
+    }
     @Test public void pickupRejectsTargetsAndUnknownReasons() {
         JsonObject o = action();
         o.getAsJsonObject("decision").addProperty("action", "pickup"); // target still present

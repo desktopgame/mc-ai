@@ -98,6 +98,46 @@ class DecisionTests(unittest.TestCase):
         self.assertNotIn("minecraft", json.dumps(clean))
         self.assertNotIn("item-", json.dumps(clean))
 
+    def test_deposit_requires_its_goal_carried_items_and_the_owner_leash(self):
+        service = DecisionService(MockDecisionProvider())
+        payload = request_fixture()
+        payload["goal"]["type"] = "deposit_items"
+        payload["availableActions"] = ["follow", "stop", "look", "pickup", "deposit"]
+        payload["state"]["companion"]["carrying"] = 3
+        result = service.decide(payload)
+        self.assertEqual(result["decision"], {"action": "deposit"})
+        self.assertEqual(result["reasonCode"], "goal_deposit")
+        payload["state"]["companion"]["carrying"] = 0
+        result = service.decide(payload)
+        self.assertEqual(result["decision"], {"action": "stop"})
+        self.assertEqual(result["reasonCode"], "inventory_empty")
+        for goal, carrying, owner_x in [("pickup_item", 3, 8), ("deposit_items", 0, 8), ("deposit_items", 3, 40)]:
+            bad = request_fixture()
+            bad["goal"]["type"] = goal
+            bad["availableActions"] = ["follow", "stop", "look", "pickup", "deposit"]
+            bad["state"]["companion"]["carrying"] = carrying
+            bad["state"]["items"] = {"count": 1, "nearestDistance": 2}
+            bad["state"]["owner"]["position"][0] = owner_x
+            with self.subTest(goal=goal, carrying=carrying, owner_x=owner_x), self.assertRaises(DecisionError):
+                DecisionService(FixedProvider({"decision": {"action": "deposit"}, "reasonCode": "goal_deposit"})).decide(bad)
+
+    def test_deposit_rejects_targets_and_invalid_carrying(self):
+        payload = request_fixture()
+        payload["goal"]["type"] = "deposit_items"
+        payload["availableActions"] = ["stop", "deposit"]
+        payload["state"]["companion"]["carrying"] = 2
+        with self.assertRaises(DecisionError):
+            DecisionService(FixedProvider({"decision": {"action": "deposit", "target": "owner"},
+                                           "reasonCode": "goal_deposit"})).decide(payload)
+        for carrying in [-1, 100001, 1.5, True, "2", None]:
+            bad = request_fixture(); bad["state"]["companion"]["carrying"] = carrying
+            with self.subTest(carrying=carrying), self.assertRaises(ValueError):
+                sanitize(bad)
+        # Item names must not reach the model through the carrying summary.
+        clean = sanitize(payload)
+        self.assertEqual(clean["state"]["companion"]["carrying"], 2)
+        self.assertNotIn("minecraft", json.dumps(clean))
+
     def test_invalid_inputs_never_reach_provider(self):
         class Never:
             def decide(self, payload): raise AssertionError("provider was called")
