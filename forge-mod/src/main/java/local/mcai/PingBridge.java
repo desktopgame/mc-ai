@@ -90,6 +90,7 @@ public final class PingBridge {
             }
         }
         terminalRequests.clear();
+        seenTerminals.clear();   // dedupe is per conversation binding; never carry it across a reset
     }
     private void ensureContext(EntityPlayerMP player) {
         if (server != MinecraftServer.getServer() || owner != player) { server = MinecraftServer.getServer(); reset(player); }

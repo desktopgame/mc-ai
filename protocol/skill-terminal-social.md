@@ -1,6 +1,6 @@
 # Skill終端結果 → Social発話 — 実装指示書
 
-状態: **Phase 1〜6 実装済み（MOD 0.0.30）。基本動作（terminal発話の一度表示、present→表示→displayed ACK→履歴登録）は実ゲーム確認済み。** 2026-09-26、`develop` / `c5bdd36` を調査。
+状態: **Phase 1〜6 実装済み（MOD 0.0.31）。基本動作（terminal発話の一度表示、present→表示→displayed ACK→履歴登録）は実ゲーム確認済み。** 2026-09-26、`develop` / `c5bdd36` を調査。
 実装済み: snapshot schema/validator、PresentationDescriptor/reason辞書、Python/Java共通fixture（fallback＋candidates）、Daemon `TerminalEventStore`/outbox/dedupe/present-ACK台帳（有界・closed digestで再生成防止・presentation生成はfirst-wins）、`/v2/terminal-events`・`/v2/social/skill-terminal`（既存providerで候補ID選択、通常会話と同じconversation履歴を参照〈読むだけ〉、未設定/失敗はfallback）・`/v2/social/terminal-delivery`（**実表示→displayed ACK**の順で通常chat履歴へ1ペア登録、suppressed/重複は登録なし、variant不一致409、forget retirement）、Forge `TerminalDeliveryState`・`TerminalPresentation`（fallback＋candidates）・terminal event取得/identity検証/重複排除・`skill_terminal_social_v1` capability gate・旧Daemon互換、`ConversationQueue` typed entry＋通常会話順序・owner初期化・12秒FIFO例外・forget/退出 fence・CONTROL lane競合時のSkill制御優先、Forgeからの present/表示/displayed・suppressed ACK（SOCIAL lane、sayは自候補と一致時のみ採用、ACK最大2回）。
 未実装/未確認: Daemon epoch変更時の旧作業表示は未実装。Skill終端Social通知の基本動作（一度表示・present/ACK・履歴登録）は実ゲーム確認済み。詳細は HANDOFF を参照。
 以下のAPI・クラス名は、現行と明記したもの以外は追加案である。
@@ -211,6 +211,10 @@ provider応答の適用時はdeliveryId・terminal identity・会話epoch・owne
 自然な候補では「原木、5個集めたよ。依頼の5個に届いた。採掘は3ブロックだった。」など、意味を保った表現にできる。失敗／取消は文体を変えても必ず明示する。
 
 Social providerの未設定、停止、HTTP例外、timeout、出力不正、未知variant、予算不足、busy、queue/executor拒否の全てをfallback経路に集約する。失敗時にSocial生成を自動再試行せず、Skillも再実行しない。ACK再送は生成再試行ではない。
+
+### Forge配送ACKの保証範囲（実装済み）
+
+Forgeのpending delivery ACKは**有界（現在32件）**。SOCIAL executorに未受理のACKはこの範囲で保持し、通常のSocial生成より先に1件ずつ再試行する（executor rejectで即座に消える問題は解消）。ただしpending queue自体が32件上限であり、32件を超える異常backlogでは新しいACKをdropして警告ログを出す。その結果、**表示済みterminalのhistory登録・outbox closeは欠落し得る（best-effort）**。表示済みチャットは巻き戻さず、Skillを再実行せず、terminalを再表示しない。保証範囲は「通常の有界backlog内=表示→ACK再送→history/outbox close」「32件超の異常backlog=表示は維持、ACK/history/outbox closeはbest-effort」。
 
 ログはidentity、status/reason、mode、latency、fallback causeだけを基本とし、会話全文・persona・APIキーを記録しない。provider障害の説明を通常の結果発話へ毎回混ぜない。
 

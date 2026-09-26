@@ -28,7 +28,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.30`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。ビルド済み・Prism配置はゲーム終了後（作業時に起動中で未配置） |
+| MODバージョン | `0.0.31`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。ビルド済み・Prism配置はゲーム終了後（作業時に起動中で未配置） |
 | Prismの有効MOD | `mc-ai-companion-0.0.29.jar`（SHA-256 `9880BCCCDA15D199152917F3A28C1563EC1AD9EC3A7B70F32BEB944F15779C78`）。0.0.28以前は `.disabled`。0.0.30は未配置 |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
@@ -91,7 +91,7 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
   - 追加Javaテスト4件: binding不一致/許可（instance・type・target・未対応action）、goal binding、terminal result/progress不一致・completed不変条件・phase/result整合、混合sequence claim。Java 74件。
 - 未消化: `ActionBridge` の配送→consume→claim を通す統合テスト（Minecraft依存のため未）、および §13 の一部異常系（収納満杯・回収途中停止・経路失敗・pause/退出）の実機確認。
 
-## Skill終端 → Social発話 — Phase 1〜6（0.0.30）
+## Skill終端 → Social発話 — Phase 1〜6（0.0.31）
 
 仕様 [protocol/skill-terminal-social.md](protocol/skill-terminal-social.md) の段階1〜3を実装。**事実のauthorityはSkillの確定terminal result**、Socialは表現のみ、Forgeはworld/表示のauthority。LLM候補選択・conversation履歴登録はPhase 4〜6で未実装。
 
@@ -116,11 +116,12 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
 - **Phase 6追補（0.0.29）**: 表示とACKの順序を修正。SOCIAL workerは**presentation選択のみ**を行い、完了情報 `TerminalDone(epoch, identity, request, say, variantId)` をgame threadへ渡す。game threadで `TerminalAckPolicy.shouldDisplay(epoch, conversationEpoch, ownerPresent)` を判定し、**表示可能なら `reply(say)` → その後 displayed ACK**、reset/forget/owner・world変更後なら **suppressed ACK**（表示なし・history登録なし）。`reset()` が先にsuppressedを送っていても後段はepoch不一致でsuppressedに留まり、reset後displayed ACKを送ることはない。追加テスト: `TerminalAckPolicy` 判定、既存の displayed=1ペア/suppressed=0/duplicate増加なしを維持。
 - **review-f33f7f5 対応（0.0.30）**: 5件の配送欠落を修正。
   - (1) present未実行/生成中のfallback ACK: `TerminalEventStore.deliver` は presentation entry が無くても snapshot から固定fallbackを確定してACKを適用（No presentation）。生成中entryはfallbackをfirst-winsで確定。生成済みsocialにForgeがfallbackを表示した場合も `variantId=fallback` を受理（他のvariantは409）。自由文はACKから受け付けない。
-  - (2) ACK executor満杯: `PingBridge` は game thread の有界 `pendingAcks`（32）から、通常Social生成より先に1件ずつ送信。`io.execute` 拒否時は保持して次tick再試行（無言破棄しない）。
+  - (2) ACK executor満杯: `PingBridge` は game thread の有界 `pendingAcks`（**現在32件**）から、通常Social生成より先に1件ずつ送信。`io.execute` に未受理のACKはこの範囲で保持し次tick再試行する（executor rejectで即消える問題は解消）。ただし **pending queue自体は32件上限**で、32件を超える異常backlogでは新しいACKを**dropして警告ログ**を出す。その場合、表示済みterminalの **history登録・outbox close は欠落し得る（best-effort）**。表示済みチャットは巻き戻さず、Skillを再実行せず、terminalを再表示しない。保証範囲: 通常の有界backlog内=表示→ACK再送→history/outbox close、32件超=表示維持・ACK/history/outbox closeはbest-effort。
   - (3) 生成中も12秒期限: Forgeの配送台帳 `TerminalDeliveryState` を実際の経路へ接続。enqueue時刻からの絶対12秒でfallback表示（first-wins）。表示済みは遅着応答で再表示しない。
   - (4) forget中の生成terminal: `displayAllPendingTerminals` が in-flight を含む未表示terminalを固定表示してから会話を切替（world/owner変更のsuppressedとは分離）。
   - (5) forget cleanupの取りこぼし: cleanupを種別非依存の `pendingCleanup` として保持し、Social生成より先に送信。次entryがterminalでも旧sessionの `!agent forget` を失わない。
   - 追加テスト: presentなしdisplayed/suppressed、生成中fallback first-wins、ready socialへのfallback表示許可と他variant409、fallback ACKでの履歴1ペア。Python 155件。
+  - `PingBridge.reset()` は旧binding破棄後に `seenTerminals.clear()` し、session/world/daemon bindingをまたいでterminal dedupe stateを持ち越さない（terminal identityは `(daemonEpoch, session, skillInstanceId, terminalId)` のため）。
 - 未実装/未確認: Daemon epoch変更時の「旧作業」明示表示は未実装。基本動作は実ゲーム確認済みだが、review-f33f7f5の5件（ACK満杯・生成中12秒・forget中生成・cleanup取りこぼし・presentなしACK）は自動テストのみ。
 
 
