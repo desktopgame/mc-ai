@@ -41,6 +41,19 @@ SOCIAL_SCHEMA = {"type": "object", "additionalProperties": False,
 SOCIAL_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
     "name": "social_turn", "strict": True, "schema": SOCIAL_SCHEMA}}
 
+# Terminal notification is a *record of finished work*, not current world state. The model only picks
+# one of the pre-built fact-complete candidates; it never writes text, numbers or intents.
+TERMINAL_INSTRUCTIONS = (
+    "ここで渡すのは終了済みの作業の確定記録(skill_terminal)だけです。現在の世界状態ではなく、"
+    "すでに終わった作業の記録です。あなたは提示された候補から、事実を一切変えずに、会話の流れに最も合う"
+    "1つを選ぶだけです。候補にない文・数値・理由・推測を追加しないでください。今後の作業や再試行を提案せず、"
+    "reply/intent/actionは出力しません。出力は指定のJSONだけにし、variantIdは提示した候補IDのいずれかにします。"
+)
+TERMINAL_SCHEMA = {"type": "object", "additionalProperties": False,
+                   "properties": {"variantId": {"type": "string"}}, "required": ["variantId"]}
+TERMINAL_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
+    "name": "terminal_variant", "strict": True, "schema": TERMINAL_SCHEMA}}
+
 
 def allows_intent(text):
     """Conservative additional guard; the model still classifies direct requests and targets."""
@@ -163,6 +176,58 @@ class LocalSocialProvider:
             raise SocialError("malformed_output") from None
 
 
+    def select_terminal(self, messages, variant_ids):
+        """Presentation-only call: the model must return one of the pre-built candidate IDs.
+
+        Same provider/settings as chat, but a dedicated strict schema and a short deadline. Any
+        deviation (free text, unknown ID, extra key, timeout) raises SocialError so the caller can
+        fall back to the fixed renderer.
+        """
+        schema = {"type": "object", "additionalProperties": False,
+                  "properties": {"variantId": {"type": "string", "enum": list(variant_ids)}},
+                  "required": ["variantId"]}
+        response_format = {"type": "json_schema", "json_schema": {
+            "name": "terminal_variant", "strict": True, "schema": schema}}
+        content = self._post(messages, response_format, min(self.timeout, 8.0), min(64, self.max_tokens))
+        value = json.loads(content)
+        if not isinstance(value, dict) or set(value) != {"variantId"} or value["variantId"] not in variant_ids:
+            raise SocialError("invalid_variant")
+        return value["variantId"]
+
+    def _post(self, messages, response_format, timeout, max_tokens):
+        self.budget.require(messages, response_format)
+        payload = {"model": self.model, "messages": messages, "stream": False,
+                   "temperature": 0, "max_tokens": max_tokens}
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        started = time.monotonic()
+        try:
+            req = request.Request(self.base_url + "/chat/completions", body, headers, method="POST")
+            with self.opener.open(req, timeout=timeout) as response:
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                raise SocialError("oversized_output")
+            parsed = json.loads(raw)
+            choice = parsed["choices"][0]
+            if choice.get("finish_reason") != "stop" or choice["message"].get("tool_calls"):
+                raise SocialError("incomplete_or_tool_output")
+            LOG.info("provider=local kind=terminal duration_ms=%d output_bytes=%d", (time.monotonic() - started) * 1000, len(raw))
+            return choice["message"]["content"]
+        except SocialError:
+            raise
+        except (TimeoutError, error.URLError, OSError) as exc:
+            LOG.warning("provider=local kind=terminal failure=%s duration_ms=%d", type(exc).__name__, (time.monotonic() - started) * 1000)
+            raise SocialError("provider_unavailable_or_timeout") from None
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise SocialError("malformed_output") from None
+
+
 class SocialBrain:
     def __init__(self, provider: SocialProvider, persona=DEFAULT_PERSONA, *, budget=None):
         if not isinstance(persona, str) or not 1 <= len(persona) <= 2000:
@@ -203,6 +268,35 @@ class SocialBrain:
             while len(self.histories) > 32:
                 self.histories.popitem(last=False)
             return result if with_intent else reply
+        finally:
+            self.lock.release()
+
+    def present_terminal(self, session, event):
+        """Choose one fact-complete candidate for a finalized terminal event using the same persona,
+        provider, history budget and lock as normal chat. Never writes free text; never touches the
+        conversation history (that happens only on a real delivery ACK). Raises SocialError to fall
+        back to the fixed renderer."""
+        from terminal_presentation import render_candidates
+        if not self.lock.acquire(blocking=False):
+            raise SocialError("busy")
+        try:
+            select = getattr(self.provider, "select_terminal", None)
+            if select is None:
+                raise SocialError("presentation_unsupported")
+            candidates = render_candidates(event)
+            variant_ids = [candidate["variantId"] for candidate in candidates]
+            # Transport details (session/epoch/UUID) are deliberately not sent to the model.
+            fact = {"type": event["type"], "target": event["target"], "status": event["status"],
+                    "reason": event["reason"], "progress": event["progress"]}
+            user = {"role": "user", "content": "確定記録: " + json.dumps(fact, ensure_ascii=False)
+                    + "\n候補: " + json.dumps(candidates, ensure_ascii=False)
+                    + "\nこの候補から variantId を1つ選んでください。"}
+            messages, _ = self.budget.prepare(
+                {"role": "system", "content": self.persona + "\n" + TERMINAL_INSTRUCTIONS},
+                [], user, TERMINAL_RESPONSE_FORMAT)
+            variant = select(messages, variant_ids)
+            say = next(candidate["say"] for candidate in candidates if candidate["variantId"] == variant)
+            return {"say": say, "variantId": variant, "mode": "social"}
         finally:
             self.lock.release()
 

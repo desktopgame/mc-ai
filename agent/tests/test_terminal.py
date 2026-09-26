@@ -8,10 +8,11 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from terminal_presentation import render_fallback, TARGET_LABELS
+from terminal_presentation import render_fallback, render_candidates, TARGET_LABELS
 from terminal_events import TerminalEventStore, TerminalError
 from skill_protocol import (SkillRequestError, validate_terminal_event, validate_terminal_query,
                             validate_present_request, validate_delivery_request, CAPABILITIES)
+from social import SocialBrain, SocialError
 from skills import SkillManager
 from execution_registry import ExecutionRegistry
 from state_cache import StateCache
@@ -34,12 +35,71 @@ def event(type_="collect_block", target=None, status="failed", reason="drop_unav
             "type": type_, "status": status, "reason": reason, "target": target, "progress": progress}
 
 
+class _StubProvider:
+    def __init__(self, variant=None, error=None):
+        self.variant = variant
+        self.error = error
+        self.calls = 0
+    def reply(self, messages): return "x"
+    def reply_with_intent(self, messages): return {"reply": "x", "intent": "none"}
+    def select_terminal(self, messages, variant_ids):
+        self.calls += 1
+        if self.error:
+            raise SocialError(self.error)
+        return self.variant if self.variant in variant_ids else variant_ids[0]
+
+
+class _NoSelectProvider:
+    def reply(self, messages): return "x"
+    def reply_with_intent(self, messages): return {"reply": "x", "intent": "none"}
+
+
+class PresentationTests(unittest.TestCase):
+    def event(self):
+        return {k: event()[k] for k in ("type", "target", "status", "reason", "progress")}
+
+    def test_present_terminal_uses_provider_and_keeps_all_facts(self):
+        ev = self.event()
+        provider = _StubProvider(variant="calm")
+        result = SocialBrain(provider).present_terminal("conv", ev)
+        self.assertEqual(result["mode"], "social")
+        self.assertEqual(result["variantId"], "calm")
+        self.assertEqual(result["say"], {c["variantId"]: c["say"] for c in render_candidates(ev)}["calm"])
+        self.assertIn("drop_unavailable", result["say"])
+        self.assertNotIn("intent", result)
+
+    def test_present_terminal_raises_so_callers_can_fall_back(self):
+        for provider in (_StubProvider(error="provider_unavailable_or_timeout"), _NoSelectProvider()):
+            with self.assertRaises(SocialError):
+                SocialBrain(provider).present_terminal("conv", self.event())
+
+    def test_present_terminal_is_busy_under_concurrent_call(self):
+        brain = SocialBrain(_StubProvider(variant="friendly"))
+        brain.lock.acquire()
+        try:
+            with self.assertRaises(SocialError):
+                brain.present_terminal("conv", self.event())
+        finally:
+            brain.lock.release()
+
+
 class FixtureTests(unittest.TestCase):
     def test_python_renderer_matches_shared_fixture(self):
         for case in FIXTURE["cases"]:
             ev = {k: case[k] for k in ("type", "target", "status", "reason", "progress")}
             self.assertEqual(render_fallback(ev), case["fallback"], case["id"])
             self.assertLessEqual(len(case["fallback"].encode("utf-16-le")) // 2, 512, case["id"])
+
+    def test_python_candidates_match_shared_fixture(self):
+        for case in FIXTURE["cases"]:
+            ev = {k: case[k] for k in ("type", "target", "status", "reason", "progress")}
+            candidates = render_candidates(ev)
+            expected = case["candidates"]
+            self.assertEqual(len(candidates), len(expected), case["id"])
+            for got, want in zip(candidates, expected):
+                self.assertEqual(got["variantId"], want["variantId"], case["id"])
+                self.assertEqual(got["say"], want["say"], case["id"])
+                self.assertLessEqual(len(got["say"].encode("utf-16-le")) // 2, 512, case["id"])
 
     def test_unknown_target_uses_registry_name(self):
         self.assertEqual(TARGET_LABELS.get("minecraft:diamond_ore"), "ダイヤ鉱石")
@@ -331,6 +391,30 @@ class HttpTests(unittest.TestCase):
         status, ack = self.post("/v2/social/terminal-delivery", dict(present, outcome="displayed", variantId="fallback"))
         self.assertEqual((status, ack["accepted"]), (200, True))
         self.assertEqual(self.post("/v2/terminal-events", {"version": 2, "daemonEpoch": "old", "session": "world"})[0], 409)
+
+    def test_present_uses_provider_once_then_returns_ready(self):
+        provider = _StubProvider(variant="friendly")
+        self.server.brain = SocialBrain(provider)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-1",
+                   "terminalId": "t-1", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-1"}
+        status, said = self.post("/v2/social/skill-terminal", present)
+        self.assertEqual((status, said["mode"], said["variantId"]), (200, "social", "friendly"))
+        self.assertEqual(said["say"], {c["variantId"]: c["say"] for c in render_candidates(snap)}["friendly"])
+        status, again = self.post("/v2/social/skill-terminal", present)
+        self.assertEqual((again["mode"], again["say"]), ("social", said["say"]))
+        self.assertEqual(provider.calls, 1)   # a duplicate present never calls the provider again
+
+    def test_present_falls_back_when_provider_fails(self):
+        self.server.brain = SocialBrain(_StubProvider(error="provider_unavailable_or_timeout"))
+        snap = {k: event(skill_id="s-2", terminal_id="t-2", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-2",
+                   "terminalId": "t-2", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-2"}
+        status, said = self.post("/v2/social/skill-terminal", present)
+        self.assertEqual((status, said["mode"], said["variantId"]), (200, "fallback", "fallback"))
+        self.assertEqual(said["say"], render_fallback(snap))
 
 
 if __name__ == "__main__":

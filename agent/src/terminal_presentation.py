@@ -121,3 +121,31 @@ def render_fallback(event):
     compact = "%s%s: %s%s。%s" % (target_name(event), DESCRIPTORS[event["type"]]["task"],
                                   _status_head(event["status"], event["reason"]), compact, note)
     return compact[:MAX_UTF16]
+
+
+def render_candidates(event):
+    """Up to three fact-complete variants (friendly / calm / concise) for the LLM to choose among.
+
+    Every candidate carries the whole confirmed fact set (status, reason, all counters, incomplete
+    note). The LLM only picks an ID; it can never invent text. Deterministic so Python and Java agree.
+    """
+    fact = _status_head(event["status"], event["reason"]) + _body(event)
+    label_task = "%s%s" % (target_name(event), DESCRIPTORS[event["type"]]["task"])
+    friendly = "%sだよ。%s" % (label_task, fact)
+    calm = "%sの結果です。%s" % (label_task, fact)
+    concise = render_fallback(event)
+    candidates = [{"variantId": "friendly", "say": friendly},
+                  {"variantId": "calm", "say": calm},
+                  {"variantId": "concise", "say": concise}]
+    for candidate in candidates:
+        if _utf16_length(candidate["say"]) > MAX_UTF16:
+            candidate["say"] = concise
+    return candidates
+
+
+def select_candidate(event, variant_id):
+    """The say for a chosen variant ID, or the fixed fallback for an unknown/absent ID."""
+    for candidate in render_candidates(event):
+        if candidate["variantId"] == variant_id:
+            return candidate["say"]
+    return render_fallback(event)

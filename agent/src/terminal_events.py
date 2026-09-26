@@ -132,6 +132,19 @@ class TerminalEventStore:
 
     # ---- presentation ledger --------------------------------------------
     def present(self, epoch, session, skillInstanceId, terminalId, conversationSession, player, deliveryId):
+        """Fallback-only presentation (no provider). Kept for a Daemon without an LLM configured."""
+        state, payload = self.present_begin(epoch, session, skillInstanceId, terminalId,
+                                             conversationSession, player, deliveryId)
+        if state == "existing":
+            return payload
+        if state == "generating":
+            return {"say": payload, "variantId": "fallback", "mode": "fallback"}
+        return self.present_finish(epoch, session, skillInstanceId, terminalId, conversationSession, player,
+                                   deliveryId, {"say": payload["__fallback__"], "variantId": "fallback", "mode": "fallback"})
+
+    def present_begin(self, epoch, session, skillInstanceId, terminalId, conversationSession, player, deliveryId):
+        """Reserves the presentation slot. Returns ("existing", result) | ("generating", fallback) |
+        ("owner", event). The provider must be called by the owner outside this lock."""
         identity = (epoch, session, skillInstanceId, terminalId)
         binding = (conversationSession, player, deliveryId)
         with self.lock:
@@ -139,7 +152,9 @@ class TerminalEventStore:
             if entry is not None:
                 if entry["binding"] != binding:
                     raise TerminalError("binding_conflict")
-                return self._presentation_result(entry)
+                if entry["state"] == "generating":
+                    return "generating", entry.get("fallback")
+                return "existing", self._presentation_result(entry)
             if identity in self.closed:
                 raise TerminalError("terminal_gone")
             self._reject_same_skill(identity)
@@ -147,11 +162,34 @@ class TerminalEventStore:
             if event is None:
                 raise TerminalError("unknown_terminal")
             from terminal_presentation import render_fallback
-            entry = {"binding": binding, "state": "ready", "say": render_fallback(event),
-                     "variantId": "fallback", "mode": "fallback", "ack": None, "fingerprint": _fingerprint(event)}
-            self.presentations[identity] = entry
+            fallback = render_fallback(event)
+            self.presentations[identity] = {"binding": binding, "state": "generating", "say": None,
+                                            "variantId": None, "mode": None, "ack": None,
+                                            "fingerprint": _fingerprint(event), "fallback": fallback}
             self.presentations.move_to_end(identity)
             self._bound_presentations()
+            result = copy.deepcopy(event)
+            result["__fallback__"] = fallback
+            return "owner", result
+
+    def present_finish(self, epoch, session, skillInstanceId, terminalId, conversationSession, player,
+                       deliveryId, result):
+        """Stores the chosen presentation once. Idempotent; a concurrent finisher returns the stored one."""
+        identity = (epoch, session, skillInstanceId, terminalId)
+        binding = (conversationSession, player, deliveryId)
+        with self.lock:
+            entry = self.presentations.get(identity)
+            if entry is None:
+                if identity in self.closed:
+                    return {"say": result["say"], "variantId": result["variantId"], "mode": result["mode"]}
+                raise TerminalError("unknown_terminal")
+            if entry["binding"] != binding:
+                raise TerminalError("binding_conflict")
+            if entry["state"] == "generating":
+                entry["state"] = "ready"
+                entry["say"] = result["say"]
+                entry["variantId"] = result["variantId"]
+                entry["mode"] = result["mode"]
             return self._presentation_result(entry)
 
     def deliver(self, epoch, session, skillInstanceId, terminalId, conversationSession, player,

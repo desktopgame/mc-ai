@@ -37,6 +37,18 @@ public class TerminalSocialTest {
                     progress.get("complete").getAsBoolean());
             assertEquals(c.get("id").getAsString(), c.get("fallback").getAsString(), say);
             assertTrue("over 512 UTF-16 units", say.getBytes(StandardCharsets.UTF_16LE).length / 2 <= 512);
+            if (c.has("candidates")) {
+                java.util.List<String[]> candidates = TerminalPresentation.renderCandidates(type, targetName,
+                        c.get("status").getAsString(), c.get("reason").getAsString(),
+                        progress.get("requested").getAsInt(), acquired, mined, progress.get("complete").getAsBoolean());
+                JsonArray expected = c.getAsJsonArray("candidates");
+                assertEquals(expected.size(), candidates.size());
+                for (int i = 0; i < expected.size(); i++) {
+                    JsonObject entry = expected.get(i).getAsJsonObject();
+                    assertEquals(entry.get("variantId").getAsString(), candidates.get(i)[0]);
+                    assertEquals(entry.get("say").getAsString(), candidates.get(i)[1]);
+                }
+            }
         }
     }
 

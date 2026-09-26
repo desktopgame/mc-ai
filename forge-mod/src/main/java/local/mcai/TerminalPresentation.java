@@ -1,5 +1,6 @@
 package local.mcai;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -61,13 +62,22 @@ public final class TerminalPresentation {
         MEANINGS.put("stopped", null); MEANINGS.put("replaced", null); MEANINGS.put("completed", null);
     }
 
+    private static String label(String target) { return LABELS.containsKey(target) ? LABELS.get(target) : target; }
+    private static String head(String status, String reason) {
+        return status.equals("completed") ? "完了。"
+                : status.equals("failed") ? "失敗[" + reason + "]。" : "取消[" + reason + "]。";
+    }
+
     public static String renderFallback(String type, String target, String status, String reason,
                                         int requested, int acquired, int mined, boolean complete) {
-        String label = LABELS.containsKey(target) ? LABELS.get(target) : target;
-        String task = TASKS.get(type);
-        String head = status.equals("completed") ? "完了。"
-                : status.equals("failed") ? "失敗[" + reason + "]。" : "取消[" + reason + "]。";
+        return label(target) + TASKS.get(type) + ": " + head(status, reason)
+                + bodyFor(type, target, status, reason, requested, acquired, mined, complete);
+    }
+
+    private static String bodyFor(String type, String target, String status, String reason,
+                                  int requested, int acquired, int mined, boolean complete) {
         List<String[]> metrics = METRICS.get(type);
+        String label = label(target);
         StringBuilder parts = new StringBuilder();
         for (int i = 0; i < metrics.size(); i++) {
             String key = metrics.get(i)[0], mlabel = metrics.get(i)[1], unit = metrics.get(i)[2];
@@ -81,18 +91,39 @@ public final class TerminalPresentation {
                 parts.append(mlabel).append(value).append(unit);
             }
         }
-        String body;
-        if (status.equals("completed")) {
-            body = parts + "。";
-        } else {
-            body = (complete ? "" : "確定分は") + parts + "。";
-            if (!complete) { body += "未確定の操作があります。"; }
-            if (status.equals("failed") && MEANINGS.containsKey(reason) && MEANINGS.get(reason) != null) {
-                body += MEANINGS.get(reason);
-            } else if (!MEANINGS.containsKey(reason)) {
-                body += "終了理由: " + reason + "。";
-            }
+        if (status.equals("completed")) { return parts + "。"; }
+        StringBuilder result = new StringBuilder((complete ? "" : "確定分は")).append(parts).append("。");
+        if (!complete) { result.append("未確定の操作があります。"); }
+        if (status.equals("failed") && MEANINGS.containsKey(reason) && MEANINGS.get(reason) != null) {
+            result.append(MEANINGS.get(reason));
+        } else if (!MEANINGS.containsKey(reason)) {
+            result.append("終了理由: ").append(reason).append("。");
         }
-        return label + task + ": " + head + body;
+        return result.toString();
+    }
+
+    /** Up to three fact-complete candidates for the LLM to choose among; mirrors Python render_candidates. */
+    public static List<String[]> renderCandidates(String type, String target, String status, String reason,
+                                                  int requested, int acquired, int mined, boolean complete) {
+        String concise = renderFallback(type, target, status, reason, requested, acquired, mined, complete);
+        String fact = head(status, reason) + bodyFor(type, target, status, reason, requested, acquired, mined, complete);
+        String labelTask = label(target) + TASKS.get(type);
+        List<String[]> candidates = new ArrayList<String[]>();
+        candidates.add(new String[] {"friendly", labelTask + "だよ。" + fact});
+        candidates.add(new String[] {"calm", labelTask + "の結果です。" + fact});
+        candidates.add(new String[] {"concise", concise});
+        for (String[] candidate : candidates) {
+            if (candidate[1].getBytes(StandardCharsets.UTF_16LE).length / 2 > 512) { candidate[1] = concise; }
+        }
+        return candidates;
+    }
+
+    /** The say for a chosen variant ID, or the fixed fallback for an unknown/absent ID. */
+    public static String selectCandidate(String type, String target, String status, String reason,
+                                         int requested, int acquired, int mined, boolean complete, String variantId) {
+        for (String[] candidate : renderCandidates(type, target, status, reason, requested, acquired, mined, complete)) {
+            if (candidate[0].equals(variantId)) { return candidate[1]; }
+        }
+        return renderFallback(type, target, status, reason, requested, acquired, mined, complete);
     }
 }

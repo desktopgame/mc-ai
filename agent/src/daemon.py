@@ -163,9 +163,29 @@ class Handler(BaseHTTPRequestHandler):
                         raise SkillSyncError("skills_not_configured")
                     if present["daemonEpoch"] != self.server.registry.epoch:
                         raise SkillSyncError("daemon_restarted")
-                    result = store.present(present["daemonEpoch"], present["session"], present["skillInstanceId"],
-                                           present["terminalId"], present["conversationSession"], present["player"],
-                                           present["deliveryId"])
+                    state, data = store.present_begin(present["daemonEpoch"], present["session"],
+                                                      present["skillInstanceId"], present["terminalId"],
+                                                      present["conversationSession"], present["player"],
+                                                      present["deliveryId"])
+                    if state == "existing":
+                        result = data
+                    elif state == "generating":
+                        result = {"say": data, "variantId": "fallback", "mode": "fallback"}
+                    else:
+                        event = data
+                        brain = getattr(self.server, "brain", None)
+                        chosen = None
+                        if brain is not None:
+                            try:
+                                chosen = brain.present_terminal(present["conversationSession"], event)
+                            except (SocialError, BudgetExceeded) as exc:
+                                LOG.info("terminal presentation fallback=%s", type(exc).__name__)
+                        if chosen is None:
+                            chosen = {"say": event["__fallback__"], "variantId": "fallback", "mode": "fallback"}
+                        result = store.present_finish(present["daemonEpoch"], present["session"],
+                                                      present["skillInstanceId"], present["terminalId"],
+                                                      present["conversationSession"], present["player"],
+                                                      present["deliveryId"], chosen)
                     response = {"version": 2, "daemonEpoch": present["daemonEpoch"], "session": present["session"],
                                 "skillInstanceId": present["skillInstanceId"], "terminalId": present["terminalId"],
                                 "deliveryId": present["deliveryId"], **result}
