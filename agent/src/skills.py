@@ -400,16 +400,12 @@ class SkillManager:
                 self._step(skill)
             return
         if parsed["status"] == "cancelled":
+            # Forge only cancels an action when it intentionally stopped it, so this is terminal.
             if skill.phase == "cancelling":
                 self._finalize(skill, "cancelled", skill.cancel_reason or "replaced")
             else:
-                skill.failures += 1
-                skill.excluded.add(target_ref)
-                if skill.failures >= MAX_FAILURES:
-                    self._finalize(skill, "failed", "retry_exhausted")
-                else:
-                    skill.phase = "selecting"
-                    self._step(skill)
+                reason = parsed["reason"] if parsed["reason"] in ("stopped", "replaced", "disconnected") else "replaced"
+                self._finalize(skill, "cancelled", reason)
             return
         # failed
         if skill.phase == "cancelling":

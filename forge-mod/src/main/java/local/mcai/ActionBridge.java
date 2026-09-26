@@ -35,9 +35,11 @@ public final class ActionBridge {
     private final ArrayDeque<ResultJob> results = new ArrayDeque<ResultJob>();
     // v2 Skill dialogue. Kept separate from the legacy GoalState so a Skill never claims a legacy action.
     private final SkillExecutionState skillState = new SkillExecutionState();
-    private boolean skillActive, skillCancelPending, skillInFlight, openInFlight, openDone, skillDone;
+    private boolean skillActive, skillCancelPending, skillInFlight, openInFlight, openDone, skillDone, skillCancelSent;
     private String skillEpoch, skillItem, claimedActionId, claimedItem, lastIssuedActionId;
     private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
+    private long claimedDeadline;
+    private JsonObject pendingSkillResult;
     private volatile JsonObject openResponse, skillResponse;
 
     private static final class Completion {
@@ -147,7 +149,7 @@ public final class ActionBridge {
         }
         if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
         if (ticket == null) { intentOrder.manual(); } else { intentOrder.accept(ticket); }
-        cancelActive("replaced"); closeSkill("replaced", false); companion.stop();
+        cancelActive("replaced"); closeSkill("replaced", true); companion.stop();
         state.replace(goal);
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         deadline = System.nanoTime() + 60000000000L; nextPoll = 0;
@@ -198,12 +200,15 @@ public final class ActionBridge {
         return goal;
     }
 
-    /** Stops local Skill execution. notifyNull leaves one poll to tell the daemon the goal is null. */
+    /** Stops local Skill execution. notifyNull leaves the cancel handshake to finish before clearing state. */
     private void closeSkill(String reason, boolean notifyNull) {
         if (!skillActive) { return; }
-        if (skillEpoch != null && skillState.skillInstanceId != null) {
+        // A terminal receipt that is already prepared must be delivered, not replaced by a cancel.
+        if (pendingSkillResult == null && skillEpoch != null && skillState.skillInstanceId != null) {
             if (claimedActionId != null && !skillState.known(claimedActionId)) {
-                enqueueSkillResult(claimedActionId, claimedSequence, "cancelled", reason, 0, claimedItem);
+                if (enqueueSkillResult(claimedActionId, claimedSequence, "cancelled", reason, 0, claimedItem)) {
+                    skillState.complete("cancelled", reason, 0);
+                }
             } else if (lastIssuedActionId != null && !skillState.known(lastIssuedActionId)) {
                 enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, 0, skillItem);
             }
@@ -211,14 +216,14 @@ public final class ActionBridge {
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null;
         if (notifyNull && skillEpoch != null && state.session != null) {
-            skillCancelPending = true;
+            skillCancelPending = true; skillCancelSent = false;
         } else {
             skillActive = false; skillCancelPending = false; skillEpoch = null; lastIssuedActionId = null;
         }
     }
 
-    private void enqueueSkillResult(String actionId, int sequence, String status, String reason, int count, String item) {
-        if (state.session == null || skillEpoch == null || skillState.skillInstanceId == null || item == null) { return; }
+    private boolean enqueueSkillResult(String actionId, int sequence, String status, String reason, int count, String item) {
+        if (state.session == null || skillEpoch == null || skillState.skillInstanceId == null || item == null) { return false; }
         JsonObject body = skillEnvelope();
         body.addProperty("skillInstanceId", skillState.skillInstanceId);
         body.addProperty("actionId", actionId);
@@ -228,11 +233,17 @@ public final class ActionBridge {
         JsonObject acquired = new JsonObject();
         acquired.addProperty("item", item); acquired.addProperty("count", count);
         body.add("acquired", acquired);
+        return enqueueSkillResultBody(body);
+    }
+
+    /** Reserves a bounded result slot. Returns false only when the queue is full, never silently discards. */
+    private boolean enqueueSkillResultBody(JsonObject body) {
         if (results.size() >= 64) {
-            LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill result queue full; notification lost");
-            return;
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill result queue full; receipt retained for retry");
+            return false;
         }
         results.add(new ResultJob(body, "/v2/action-result"));
+        return true;
     }
 
     private void startSkillOpen() {
@@ -285,6 +296,8 @@ public final class ActionBridge {
                 String outcome = active.pickupOutcome();
                 if (stored > 0) { finishSkillAction("succeeded", outcome == null || outcome.isEmpty() ? "completed" : outcome, stored); }
                 else { finishSkillAction("failed", outcome == null || outcome.isEmpty() ? "inventory_full" : outcome, 0); }
+            } else if (now >= claimedDeadline) {
+                active.stop(); finishSkillAction("failed", "expired", 0);
             } else if (active.lastResult().equals("path_not_found")) {
                 active.stop(); finishSkillAction("failed", "path_not_found", 0);
             }
@@ -308,9 +321,16 @@ public final class ActionBridge {
         if (skillCancelPending) {
             if (skillDone) {
                 skillDone = false; skillInFlight = false; skillResponse = null;
-                skillActive = false; skillCancelPending = false; skillEpoch = null; lastIssuedActionId = null;
-            } else if (!skillInFlight && now >= nextPoll) {
+                if (skillCancelSent) {
+                    skillActive = false; skillCancelPending = false; skillEpoch = null;
+                    lastIssuedActionId = null; skillCancelSent = false;
+                    return;
+                }
+                // A response that predates the cancel is discarded; the null goal is still due.
+            }
+            if (!skillInFlight && now >= nextPoll && !skillCancelSent) {
                 startSkillGoal(null);
+                skillCancelSent = true;
             }
             return;
         }
@@ -343,18 +363,21 @@ public final class ActionBridge {
             }
             EntityItem target = findTarget(companion, action.targetRef, action.item);
             if (target == null) {
-                if (skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
-                enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", 0, action.item);
+                if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", 0, action.item)
+                        && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
                 return;
             }
             if (target.delayBeforeCanPickup > 0) {
-                if (skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_not_ready", 0); }
-                enqueueSkillResult(action.actionId, action.sequence, "failed", "target_not_ready", 0, action.item);
+                if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_not_ready", 0, action.item)
+                        && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_not_ready", 0); }
                 return;
             }
+            // Reserve room for the running and terminal receipts before mutating the world.
+            if (results.size() >= 60) { return; }
             if (!skillState.claim(action.actionId, action.sequence)) { return; }
             claimedActionId = action.actionId; claimedSequence = action.sequence;
             claimedItem = action.item; claimedMaxCount = action.maxCount;
+            claimedDeadline = System.nanoTime() + (long) action.timeoutMs * 1000000L;
             state.status = "running";
             active = companion; companion.pickupItem(action.targetRef, action.maxCount);
             enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", 0, action.item);
@@ -366,10 +389,23 @@ public final class ActionBridge {
 
     private void finishSkillAction(String status, String reason, int count) {
         if (claimedActionId == null) { return; }
-        enqueueSkillResult(claimedActionId, claimedSequence, status, reason, count, claimedItem);
-        skillState.complete(status, reason, count);
-        claimedActionId = null; claimedItem = null;
         if (active != null) { active.stop(); active = null; }
+        JsonObject body = skillEnvelope();
+        body.addProperty("skillInstanceId", skillState.skillInstanceId);
+        body.addProperty("actionId", claimedActionId);
+        body.addProperty("actionSequence", claimedSequence);
+        body.addProperty("status", status);
+        body.addProperty("reason", reason);
+        JsonObject acquired = new JsonObject();
+        acquired.addProperty("item", claimedItem); acquired.addProperty("count", count);
+        body.add("acquired", acquired);
+        // Never mark the action settled unless its terminal receipt has a reserved slot.
+        if (enqueueSkillResultBody(body)) {
+            skillState.complete(status, reason, count);
+            claimedActionId = null; claimedItem = null;
+        } else {
+            pendingSkillResult = body;
+        }
     }
 
     private void finishSkill(String status, String reason, int acquired) {
@@ -389,9 +425,19 @@ public final class ActionBridge {
 
     private void failSkill(String reason) {
         intentOrder.manual();
+        if (pendingSkillResult != null) {
+            // A real collection already happened; deliver its receipt via flushPendingSkillResult.
+            if (active != null) { active.stop(); active = null; }
+            claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+            skillActive = false; skillCancelPending = false; skillEpoch = null;
+            state.goal = null; state.actionId = null; state.status = "idle";
+            nextPoll = 0;
+            return;
+        }
         if (skillActive && skillEpoch != null && claimedActionId != null && !skillState.known(claimedActionId)) {
-            enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, 0, claimedItem);
-            skillState.complete("failed", reason, 0);
+            if (enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, 0, claimedItem)) {
+                skillState.complete("failed", reason, 0);
+            }
         }
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
@@ -399,6 +445,19 @@ public final class ActionBridge {
         state.goal = null; state.actionId = null; state.status = "idle";
         nextPoll = 0;
         debugReply("収集を完了できなかったため停止しました（" + reason + "）。");
+    }
+
+    /** Retries a terminal receipt that could not be queued when the world was changed. */
+    private void flushPendingSkillResult() {
+        if (pendingSkillResult == null) { return; }
+        JsonObject body = pendingSkillResult;
+        if (!enqueueSkillResultBody(body)) { return; }
+        pendingSkillResult = null;
+        String status = body.get("status").getAsString();
+        String reason = body.get("reason").getAsString();
+        int count = body.getAsJsonObject("acquired").get("count").getAsInt();
+        skillState.complete(status, reason, count);
+        claimedActionId = null; claimedItem = null;
     }
 
     private EntityItem findTarget(CompanionEntity companion, String targetRef, String item) {
@@ -489,6 +548,7 @@ public final class ActionBridge {
         MinecraftServer server = MinecraftServer.getServer();
         List players = server == null ? null : server.getConfigurationManager().playerEntityList;
         synchronize(players != null && players.size() == 1 ? (EntityPlayerMP) players.get(0) : null);
+        flushPendingSkillResult();
         if (skillActive) {
             skillTick();
             displayState = state.status.equals("thinking") ? "thinking" : state.status.equals("running") ? "running" : "idle";

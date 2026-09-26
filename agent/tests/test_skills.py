@@ -152,6 +152,20 @@ class SkillTests(unittest.TestCase):
         manager.tick()
         self.assertEqual(manager.update(goal(1, count=2, epoch=self.epoch))["skill"]["result"]["reason"], "stale_state")
 
+    def test_cancelled_receipt_without_prior_cancel_is_terminal(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4), "item-b": drop(6)}, seq=1), True)
+        action = self.accept(manager, 1, count=3)["action"]
+        body = {"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                "actionSequence": action["actionSequence"], "status": "cancelled", "reason": "replaced",
+                "acquired": {"item": "minecraft:log", "count": 0}}
+        manager.result(body)
+        view = manager.update(goal(1, count=3, epoch=self.epoch))
+        self.assertEqual(view["status"], "cancelled")
+        self.assertIsNone(view["action"])
+        self.assertEqual(view["skill"]["result"]["reason"], "replaced")
+
     def test_cancellation_with_inflight_action_settles(self):
         states, manager, self.epoch = self.create()
         states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)

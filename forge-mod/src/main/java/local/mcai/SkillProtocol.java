@@ -39,7 +39,7 @@ public final class SkillProtocol {
 
     public static final class Action {
         public final String actionId, skillInstanceId, companionId, targetRef, item;
-        public final int sequence, dimension, maxCount, observationSequence;
+        public final int sequence, dimension, maxCount, observationSequence, timeoutMs;
         Action(JsonObject o) {
             keys(o, "type", "actionId", "actionSequence", "skillInstanceId", "companionId", "dimension",
                     "targetRef", "item", "maxCount", "timeoutMs", "observationSequence");
@@ -56,7 +56,7 @@ public final class SkillProtocol {
             dimension = integer(o, "dimension", Integer.MIN_VALUE, Integer.MAX_VALUE);
             maxCount = integer(o, "maxCount", 1, 64);
             observationSequence = integer(o, "observationSequence", 0, Integer.MAX_VALUE);
-            integer(o, "timeoutMs", 1, 600000);
+            timeoutMs = integer(o, "timeoutMs", 1, 600000);
         }
     }
 
