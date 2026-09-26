@@ -45,6 +45,59 @@ class DecisionTests(unittest.TestCase):
         payload["state"]["companion"]["health"] = 4
         self.assertEqual(service.decide(payload)["reasonCode"], "low_health")
 
+    def test_pickup_requires_its_goal_an_item_and_the_owner_leash(self):
+        service = DecisionService(MockDecisionProvider())
+        payload = request_fixture()
+        payload["goal"]["type"] = "pickup_item"
+        payload["availableActions"] = ["follow", "stop", "look", "pickup"]
+        payload["state"]["items"] = {"count": 2, "nearestDistance": 4}
+        result = service.decide(payload)
+        self.assertEqual(result["decision"], {"action": "pickup"})
+        self.assertEqual(result["reasonCode"], "goal_pickup")
+        # Nothing observed nearby: the only safe answer is to stay put.
+        payload["state"]["items"] = {"count": 0, "nearestDistance": None}
+        result = service.decide(payload)
+        self.assertEqual(result["decision"], {"action": "stop"})
+        self.assertEqual(result["reasonCode"], "no_item_in_range")
+        # A pickup for another goal, without an item, or beyond the leash must be refused.
+        payload["state"]["items"] = {"count": 1, "nearestDistance": 2}
+        for goal, items, owner_x in [("follow_owner", {"count": 1, "nearestDistance": 2}, 8),
+                                     ("pickup_item", {"count": 0, "nearestDistance": None}, 8),
+                                     ("pickup_item", {"count": 1, "nearestDistance": 2}, 40)]:
+            bad = request_fixture()
+            bad["goal"]["type"] = goal
+            bad["availableActions"] = ["follow", "stop", "look", "pickup"]
+            bad["state"]["items"] = items
+            bad["state"]["owner"]["position"][0] = owner_x
+            with self.subTest(goal=goal, items=items, owner_x=owner_x), self.assertRaises(DecisionError):
+                DecisionService(FixedProvider({"decision": {"action": "pickup"}, "reasonCode": "goal_pickup"})).decide(bad)
+
+    def test_pickup_rejects_targets_and_invalid_item_summaries(self):
+        payload = request_fixture()
+        payload["goal"]["type"] = "pickup_item"
+        payload["availableActions"] = ["stop", "pickup"]
+        payload["state"]["items"] = {"count": 1, "nearestDistance": 2}
+        with self.assertRaises(DecisionError):
+            DecisionService(FixedProvider({"decision": {"action": "pickup", "target": "item-1"},
+                                           "reasonCode": "goal_pickup"})).decide(payload)
+        for items in [{"count": -1, "nearestDistance": None}, {"count": 17, "nearestDistance": 2},
+                      {"count": 0, "nearestDistance": 2}, {"count": 1, "nearestDistance": 99},
+                      {"count": 1}, {"count": 1, "nearestDistance": 2, "type": "minecraft:diamond"},
+                      {"count": True, "nearestDistance": 2}]:
+            bad = request_fixture(); bad["state"]["items"] = items
+            with self.subTest(items=items), self.assertRaises(ValueError):
+                sanitize(bad)
+
+    def test_item_names_and_ids_never_reach_the_decision_model(self):
+        payload = request_fixture()
+        payload["goal"]["type"] = "pickup_item"
+        payload["availableActions"] = ["stop", "pickup"]
+        payload["state"]["items"] = {"count": 1, "nearestDistance": 2}
+        clean = sanitize(payload)
+        self.assertEqual(clean["state"]["items"], {"count": 1, "nearestDistance": 2})
+        self.assertNotIn("minecraft", json.dumps(clean))
+        self.assertNotIn("item-", json.dumps(clean))
+
     def test_invalid_inputs_never_reach_provider(self):
         class Never:
             def decide(self, payload): raise AssertionError("provider was called")

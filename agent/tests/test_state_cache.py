@@ -29,7 +29,8 @@ class StateCacheTests(unittest.TestCase):
         self.assertEqual(view["state"]["owner"]["position"], [12, 64, 0])
         self.assertEqual(view["state"]["owner"]["inventory"], {"minecraft:stone": 3, "minecraft:torch": 3})
         self.assertEqual(view["state"]["companion"]["health"], 18)
-        self.assertEqual(len(view["events"]), 5)
+        self.assertEqual(view["state"]["items"]["item-11"], {"type": "minecraft:diamond", "distance": 4})
+        self.assertEqual(len(view["events"]), 6)
         view["state"]["owner"]["position"][0] = 999
         self.assertEqual(cache.view({"version": 1})["state"]["owner"]["position"][0], 12)
 
@@ -50,7 +51,10 @@ class StateCacheTests(unittest.TestCase):
         cache = StateCache(); cache.update(snapshot(), True)
         for bad_event in [{"type": "shell", "command": "secret"},
                           {"type": "health_changed", "entity": "owner", "health": float("nan")},
-                          {"type": "inventory_changed", "added": {}, "removed": {"minecraft:stone": 99}}]:
+                          {"type": "inventory_changed", "entity": "owner", "added": {}, "removed": {"minecraft:stone": 99}},
+                          {"type": "inventory_changed", "added": {}, "removed": {}},
+                          {"type": "item_updated", "id": "item-404", "observation": {"type": "minecraft:dirt", "distance": 2}},
+                          {"type": "item_left_range", "id": "item-404"}]:
             batch = events(); batch["events"].append(bad_event)
             with self.assertRaises((ValueError, SyncError)): cache.update(batch)
             self.assertEqual(cache.view({"version": 1})["state"], snapshot()["state"])
@@ -71,6 +75,34 @@ class StateCacheTests(unittest.TestCase):
         cache.update(fresh, True)
         batch = events(); batch["sequence"] = 5
         with self.assertRaises(ValueError): cache.update(batch)
+
+    def test_item_sightings_and_companion_inventory_are_tracked_separately(self):
+        cache = StateCache(); cache.update(snapshot(), True); cache.update(events())
+        delta = {"version": 1, "session": snapshot()["session"], "sequence": 2, "events": [
+            {"type": "item_updated", "id": "item-11", "observation": {"type": "minecraft:diamond", "distance": 2}},
+            {"type": "inventory_changed", "entity": "companion", "added": {"minecraft:diamond": 1}, "removed": {}},
+            {"type": "task_completed", "task": "idle", "result": "pickup_completed"}]}
+        cache.update(delta)
+        state = cache.view({"version": 1})["state"]
+        self.assertEqual(state["items"]["item-11"]["distance"], 2)
+        self.assertEqual(state["companion"]["inventory"], {"minecraft:diamond": 1})
+        # The owner's inventory must not move when the companion picks something up.
+        self.assertEqual(state["owner"]["inventory"], {"minecraft:stone": 3, "minecraft:torch": 3})
+        delta["sequence"] = 3
+        delta["events"] = [{"type": "item_left_range", "id": "item-11"},
+                           {"type": "inventory_changed", "entity": "companion", "added": {}, "removed": {"minecraft:diamond": 1}}]
+        cache.update(delta)
+        state = cache.view({"version": 1})["state"]
+        self.assertEqual(state["items"], {})
+        self.assertEqual(state["companion"]["inventory"], {})
+
+    def test_companion_inventory_event_requires_a_loaded_companion(self):
+        cache = StateCache()
+        data = snapshot(); data["state"]["companion"] = None
+        cache.update(data, True)
+        delta = {"version": 1, "session": data["session"], "sequence": 1, "events": [
+            {"type": "inventory_changed", "entity": "companion", "added": {"minecraft:dirt": 1}, "removed": {}}]}
+        with self.assertRaises(ValueError): cache.update(delta)
 
     def test_stale_heartbeat_history_bounds_and_session_isolation(self):
         now = [0.0]; cache = StateCache(clock=lambda: now[0]); cache.update(snapshot(), True)

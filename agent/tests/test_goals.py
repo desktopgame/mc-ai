@@ -20,7 +20,8 @@ def snapshot():
     return {"version": 1, "session": "world", "sequence": 0,
             "state": {"dimension": 0, "owner": {"position": [8, 64, 0], "health": 20, "inventory": {}},
                       "companion": {"id": "companion", "position": [0, 64, 0], "health": 20,
-                                    "task": "idle", "result": "none"}, "hostiles": {}}}
+                                    "task": "idle", "result": "none", "inventory": {}},
+                      "hostiles": {}, "items": {}}}
 
 
 def request(revision=1, goal="follow_owner", session="world"):
@@ -127,6 +128,39 @@ class GoalTests(unittest.TestCase):
         data["sequence"] = 3; data["state"]["companion"]["id"] = "replacement"
         states.update(data, True)
         self.assertEqual(manager.update(request(2))["status"], "failed")
+
+    def test_pickup_goal_uses_observed_items_and_reports_its_own_failures(self):
+        states, manager = self.create()
+        data = snapshot(); data["sequence"] = 1
+        data["state"]["items"] = {"item-3": {"type": "minecraft:diamond", "distance": 4}}
+        states.update(data, True)
+        ready = wait_for(manager, request(1, "pickup_item"))
+        self.assertEqual(ready["action"]["decision"], {"action": "pickup"})
+        self.assertEqual(ready["action"]["reasonCode"], "goal_pickup")
+        self.report(manager, ready, "running")
+        self.report(manager, ready, "failed", "inventory_full")
+        self.assertEqual(manager.update(request(1, "pickup_item"))["status"], "failed")
+        # The item disappeared before the next goal: stop is the only validated outcome.
+        data["sequence"] = 2; data["state"]["items"] = {}
+        states.update(data, True)
+        empty = wait_for(manager, request(2, "pickup_item"))
+        self.assertEqual(empty["action"]["decision"], {"action": "stop"})
+        self.assertEqual(empty["action"]["reasonCode"], "no_item_in_range")
+
+    def test_pickup_input_carries_only_counts_and_distance(self):
+        provider = DelayedProvider(); states, manager = self.create(provider)
+        data = snapshot(); data["sequence"] = 1
+        data["state"]["items"] = {"item-3": {"type": "minecraft:diamond", "distance": 6},
+                                  "item-4": {"type": "minecraft:dirt", "distance": 2}}
+        data["state"]["companion"]["inventory"] = {"minecraft:diamond": 1}
+        states.update(data, True)
+        manager.update(request(1, "pickup_item"))
+        self.assertTrue(provider.started.wait(1))
+        provider.release.set(); self.join(manager)
+        sent = json.dumps(provider.inputs[0])
+        self.assertEqual(provider.inputs[0]["state"]["items"], {"count": 2, "nearestDistance": 2})
+        self.assertNotIn("item-", sent)
+        self.assertNotIn("minecraft", sent)
 
     def test_expiry_and_cancellation_without_fresh_observations(self):
         now = [0.0]; _, manager = self.create(clock=lambda: now[0])

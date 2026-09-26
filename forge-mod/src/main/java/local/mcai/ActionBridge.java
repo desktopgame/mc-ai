@@ -98,15 +98,16 @@ public final class ActionBridge {
         event.setCanceled(true);
         synchronize(event.player);
         String[] parts = message.split("\\s+");
-        if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop"))) {
-            reply("使い方: !agent do follow / look / stop"); return;
+        if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop") || parts[2].equals("pickup"))) {
+            reply("使い方: !agent do follow / look / stop / pickup"); return;
         }
-        requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner" : "stop", null);
+        requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner"
+                : parts[2].equals("pickup") ? "pickup_item" : "stop", null);
     }
 
     private boolean requestGoal(EntityPlayerMP player, String goal, IntentOrder.Ticket ticket) {
         synchronize(player);
-        if (!(goal.equals("follow_owner") || goal.equals("look_at_owner") || goal.equals("stop"))) { return false; }
+        if (!(goal.equals("follow_owner") || goal.equals("look_at_owner") || goal.equals("stop") || goal.equals("pickup_item"))) { return false; }
         if (goal.equals("stop")) {
             // A delayed natural stop must not cancel a newer explicit action.
             if (ticket != null) { intentOrder.accept(ticket); cancelActive("replaced"); state.replace(null); nextPoll = 0; }
@@ -181,9 +182,12 @@ public final class ActionBridge {
                                     companion.getHealth(), companion.getDistanceSqToEntity(owner))) {
                 fail("unsafe_state"); return;
             }
+            // Items are volatile: re-check just before execution, not only when the decision was made.
+            if (action.type.equals("pickup") && !companion.hasItemInRange()) { fail("no_item_in_range"); return; }
             active = companion;
             if (action.type.equals("follow")) { companion.follow(); result("running", "accepted"); debugReply("追従を始めます。"); }
             else if (action.type.equals("look")) { companion.look(); result("running", "accepted"); debugReply("そちらを向きます。"); }
+            else if (action.type.equals("pickup")) { companion.pickup(); result("running", "accepted"); debugReply("落ちているものを拾いに行きます。"); }
             else {
                 companion.stop(); state.finish(state.session, state.revision, action.id, "succeeded");
                 result("succeeded", "completed"); active = null; debugReply("判断結果に従って待機します。");
@@ -207,9 +211,12 @@ public final class ActionBridge {
             else if (active.getHealth() <= 6 || active.getDistanceSqToEntity(owner) > 1024) { fail("unsafe_state"); }
             else if (active.lastResult().equals("path_not_found")) { fail("path_not_found"); }
             else if (active.task().equals("idle")) {
-                boolean success = active.lastResult().equals("look_completed");
+                String last = active.lastResult();
+                boolean success = last.equals("look_completed") || last.equals("pickup_completed");
+                String reason = success ? "completed"
+                        : last.equals("no_item_in_range") || last.equals("inventory_full") ? last : "owner_unavailable";
                 state.finish(state.session, state.revision, state.actionId, success ? "succeeded" : "failed");
-                result(success ? "succeeded" : "failed", success ? "completed" : "owner_unavailable"); active = null;
+                result(success ? "succeeded" : "failed", reason); active = null;
             }
         }
         displayState = state.status.equals("thinking") ? "thinking" : state.status.equals("running") ? "running" : "idle";

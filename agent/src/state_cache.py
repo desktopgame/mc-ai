@@ -40,9 +40,19 @@ def hostile(value):
     return {"type": kind, "distance": number(value["distance"], 0, 32)}
 
 
-TASKS = ("idle", "follow", "look")
+def dropped_item(value):
+    if not isinstance(value, dict) or set(value) != {"type", "distance"}:
+        raise ValueError("invalid_item")
+    kind = value["type"]
+    if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", kind):
+        raise ValueError("invalid_item_type")
+    return {"type": kind, "distance": number(value["distance"], 0, 16)}
+
+
+TASKS = ("idle", "follow", "look", "pickup")
 RESULTS = ("none", "stopped", "following", "looking", "near_owner", "owner_unavailable",
-           "look_completed", "companion_died", "owner_out_of_range", "path_not_found", "path_retrying")
+           "look_completed", "companion_died", "owner_out_of_range", "path_not_found", "path_retrying",
+           "picking_up", "pickup_completed", "no_item_in_range", "inventory_full")
 
 
 def task(value):
@@ -52,7 +62,7 @@ def task(value):
 
 
 def validate_state(value):
-    if not isinstance(value, dict) or set(value) != {"dimension", "owner", "companion", "hostiles"}:
+    if not isinstance(value, dict) or set(value) != {"dimension", "owner", "companion", "hostiles", "items"}:
         raise ValueError("invalid_state")
     dimension = value["dimension"]
     if type(dimension) is not int or not -2147483648 <= dimension <= 2147483647:
@@ -62,16 +72,21 @@ def validate_state(value):
         raise ValueError("invalid_owner")
     companion = value["companion"]
     if companion is not None:
-        if not isinstance(companion, dict) or set(companion) != {"id", "position", "health", "task", "result"}:
+        if not isinstance(companion, dict) or set(companion) != {"id", "position", "health", "task", "result", "inventory"}:
             raise ValueError("invalid_companion")
         companion = {"id": identity(companion["id"]), "position": position(companion["position"]),
-                     "health": health(companion["health"]), **task({k: companion[k] for k in ("task", "result")})}
+                     "health": health(companion["health"]), **task({k: companion[k] for k in ("task", "result")}),
+                     "inventory": inventory(companion["inventory"])}
     hostiles = value["hostiles"]
     if not isinstance(hostiles, dict) or len(hostiles) > 16:
         raise ValueError("invalid_hostiles")
+    items = value["items"]
+    if not isinstance(items, dict) or len(items) > 16:
+        raise ValueError("invalid_items")
     return {"dimension": dimension,
             "owner": {"position": position(owner["position"]), "health": health(owner["health"]), "inventory": inventory(owner["inventory"])},
-            "companion": companion, "hostiles": {identity(k): hostile(v) for k, v in hostiles.items()}}
+            "companion": companion, "hostiles": {identity(k): hostile(v) for k, v in hostiles.items()},
+            "items": {identity(k): dropped_item(v) for k, v in items.items()}}
 
 
 def apply_event(state, event):
@@ -85,10 +100,13 @@ def apply_event(state, event):
         if entity is None: raise ValueError("missing_companion")
         entity[field] = position(event[field]) if field == "position" else health(event[field])
     elif kind == "inventory_changed":
-        if set(event) != {"type", "added", "removed"}: raise ValueError("invalid_inventory_event")
+        if set(event) != {"type", "entity", "added", "removed"} or event["entity"] not in ("owner", "companion"):
+            raise ValueError("invalid_inventory_event")
+        holder = state[event["entity"]]
+        if holder is None: raise ValueError("missing_companion")
         added, removed = inventory(event["added"]), inventory(event["removed"])
         if set(added) & set(removed): raise ValueError("overlapping_inventory_delta")
-        items = state["owner"]["inventory"]
+        items = holder["inventory"]
         for key, count in removed.items():
             if items.get(key, 0) < count: raise SyncError("inventory_mismatch")
             items[key] -= count
@@ -109,6 +127,17 @@ def apply_event(state, event):
         key = identity(event["id"])
         if key not in state["hostiles"]: raise SyncError("hostile_mismatch")
         del state["hostiles"][key]
+    elif kind in ("item_entered_range", "item_updated"):
+        if set(event) != {"type", "id", "observation"}: raise ValueError("invalid_item_event")
+        key = identity(event["id"])
+        if (key in state["items"]) != (kind == "item_updated"):
+            raise SyncError("item_mismatch")
+        state["items"][key] = dropped_item(event["observation"])
+    elif kind == "item_left_range":
+        if set(event) != {"type", "id"}: raise ValueError("invalid_item_event")
+        key = identity(event["id"])
+        if key not in state["items"]: raise SyncError("item_mismatch")
+        del state["items"][key]
     else:
         raise ValueError("unknown_event")
 

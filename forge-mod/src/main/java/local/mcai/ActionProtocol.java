@@ -34,11 +34,12 @@ public final class ActionProtocol {
         if (!id.matches("[A-Za-z0-9_-]{1,80}") || !companionId.matches("[A-Za-z0-9_-]{1,80}")) { throw new IllegalArgumentException("Invalid identity"); }
         dimension = o.get("dimension").getAsInt();
         if (!integer(o, "dimension", dimension)) { throw new IllegalArgumentException("Invalid dimension"); }
-        if (!Arrays.asList("goal_follow", "goal_stop", "goal_look", "owner_near", "low_health", "owner_out_of_range", "unavailable_action").contains(string(o, "reasonCode"))) {
+        if (!Arrays.asList("goal_follow", "goal_stop", "goal_look", "goal_pickup", "owner_near", "low_health",
+                "owner_out_of_range", "no_item_in_range", "unavailable_action").contains(string(o, "reasonCode"))) {
             throw new IllegalArgumentException("Invalid reason");
         }
         JsonObject d = o.getAsJsonObject("decision"); type = string(d, "action");
-        if (type.equals("stop")) { keys(d, "action"); }
+        if (type.equals("stop") || type.equals("pickup")) { keys(d, "action"); }
         else if (type.equals("follow") || type.equals("look")) {
             keys(d, "action", "target");
             if (!string(d, "target").equals("owner")) { throw new IllegalArgumentException("Invalid target"); }
@@ -49,6 +50,8 @@ public final class ActionProtocol {
         if (type.equals("stop")) { return true; }
         if (health <= 6) { return false; }
         if (type.equals("look")) { return "look_at_owner".equals(goal); }
+        // Pickup walks away from the owner, so it keeps the same 32-block leash as follow.
+        if (type.equals("pickup")) { return "pickup_item".equals(goal) && distanceSquared >= 0 && distanceSquared <= 1024; }
         return "follow_owner".equals(goal) && distanceSquared >= 0 && distanceSquared <= 1024;
     }
 }

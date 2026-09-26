@@ -12,7 +12,8 @@ from context_budget import BudgetExceeded
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
 REASONS = {"accepted", "completed", "replaced", "stopped", "unsafe_state", "path_not_found",
-           "owner_unavailable", "companion_unavailable", "disconnected", "expired"}
+           "owner_unavailable", "companion_unavailable", "disconnected", "expired",
+           "no_item_in_range", "inventory_full"}
 LOG = logging.getLogger("mcai.goals")
 
 
@@ -42,9 +43,12 @@ class GoalManager:
 
     def _input(self, goal, state):
         if state["companion"] is None: raise SyncError("companion_unavailable")
-        return {"version": 1, "goal": {"type": goal}, "availableActions": ["follow", "stop", "look"],
+        items = state["items"]
+        nearest = min((entry["distance"] for entry in items.values()), default=None)
+        return {"version": 1, "goal": {"type": goal}, "availableActions": ["follow", "stop", "look", "pickup"],
                 "state": {"companion": {k: state["companion"][k] for k in ("health", "position")},
-                          "owner": {"position": state["owner"]["position"]}}}
+                          "owner": {"position": state["owner"]["position"]},
+                          "items": {"count": len(items), "nearestDistance": nearest}}}
 
     def update(self, data):
         envelope(data, {"goal"})

@@ -5,7 +5,7 @@ import static org.junit.Assert.*;
 
 public class DebugCommandTest {
     @Test public void acceptsOnlySupportedCommands() {
-        for (String type : new String[] {"spawn", "follow", "stop", "look", "status", "help"}) {
+        for (String type : new String[] {"spawn", "follow", "stop", "look", "pickup", "status", "help"}) {
             assertEquals(type, DebugCommand.parse("!agent " + type).type);
         }
     }

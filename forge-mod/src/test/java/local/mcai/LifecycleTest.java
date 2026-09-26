@@ -76,6 +76,29 @@ public class LifecycleTest {
         try { new ActionProtocol(value); fail("Accepted invalid action"); }
         catch (IllegalArgumentException | IllegalStateException | NullPointerException expected) { }
     }
+    @Test public void pickupMatchesOnlyItsGoalAndKeepsTheOwnerLeash() {
+        JsonObject o = action();
+        o.getAsJsonObject("decision").remove("target");
+        o.getAsJsonObject("decision").addProperty("action", "pickup");
+        o.addProperty("reasonCode", "goal_pickup");
+        ActionProtocol a = new ActionProtocol(o);
+        assertTrue(a.safe("pickup_item", "c", 0, 20, 64));
+        assertFalse(a.safe("follow_owner", "c", 0, 20, 64));
+        assertFalse(a.safe("pickup_item", "c", 0, 6, 64));
+        assertFalse(a.safe("pickup_item", "c", 0, 20, 1025));
+        assertFalse(a.safe("pickup_item", "changed", 0, 20, 64));
+    }
+    @Test public void pickupRejectsTargetsAndUnknownReasons() {
+        JsonObject o = action();
+        o.getAsJsonObject("decision").addProperty("action", "pickup"); // target still present
+        o.addProperty("reasonCode", "goal_pickup");
+        reject(o);
+        o = action();
+        o.getAsJsonObject("decision").remove("target");
+        o.getAsJsonObject("decision").addProperty("action", "pickup");
+        o.addProperty("reasonCode", "mine_everything");
+        reject(o);
+    }
     @Test public void unknownMissingAndInjectedActionsAreRejected() {
         JsonObject o = action(); o.getAsJsonObject("decision").addProperty("action", "shell"); reject(o);
         o = action(); o.getAsJsonObject("decision").remove("target"); reject(o);

@@ -1,5 +1,24 @@
 # Action lifecycle — MOD 0.0.6 / protocol 1
 
+## Phase 6の最初の操作 — pickup（0.0.10）
+
+目的 `pickup_item`、判断結果 `{"action":"pickup"}`、理由 `goal_pickup / no_item_in_range` を追加した。
+pickupはtargetを持たない。**どのアイテムを拾うかはモデルではなくForgeが決め、観測範囲内の最も近い落下物だけを対象とする。**
+種類を指定した依頼は未対応で、Socialはそのような発言をnoneにする。品物を選ぶ判断は後続の増分に残す。
+
+観測に落下物と Companion のインベントリを追加した。詳細は [Protocol v1](README.md#phase-5--観測同期) を参照。
+判断モデルへ渡すのは `items.count` と `items.nearestDistance` だけで、アイテム名・エンティティIDは渡さない。
+
+実行前後の検証:
+
+- Daemonは `count` が0のpickupを拒否し、`no_item_in_range` のstopだけを認める。pickupもfollowと同じ32ブロックの制限を受ける。
+- Forgeは実行直前に改めて範囲内の落下物を確認する。判断時にあっても消えていれば `no_item_in_range` でfailedにする。
+- 到達後に9スロットへ入らなければ `inventory_full`。一部だけ入った場合は成功とし、残りは地面に残す。
+- 実行結果の理由に `no_item_in_range / inventory_full` を追加した。経路失敗は既存の `path_not_found` を使う。
+
+Companionのインベントリは9スロットでワールドへ保存し、死亡時は中身を地面へ落とす。所有者への受け渡し（deposit）は未実装。
+手動確認は `!agent pickup`（Daemonを経由しない）と `!agent do pickup`（AI判断経由）、所持品は `!agent status`。
+
 ## 0.0.8の通信実装
 
 HTTP APIとJSONは変更なし。ForgeはSocial・Observation・Control・Resultsの4系統の単一スレッドExecutorをプロセス単位で共有する。

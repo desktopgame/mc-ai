@@ -6,6 +6,7 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityList;
 import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.monster.IMob;
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.item.Item;
@@ -138,7 +139,8 @@ public final class ObservationBridge {
     }
 
     private JsonObject capture(EntityPlayerMP player) {
-        JsonObject state = new JsonObject(), owner = new JsonObject(), inventory = new JsonObject(), hostiles = new JsonObject();
+        JsonObject state = new JsonObject(), owner = new JsonObject(), inventory = new JsonObject(),
+                hostiles = new JsonObject(), items = new JsonObject();
         state.addProperty("dimension", player.dimension);
         owner.add("position", position(player)); owner.addProperty("health", player.getHealth());
         for (ItemStack stack : player.inventory.mainInventory) { addItem(inventory, stack); }
@@ -153,7 +155,12 @@ public final class ObservationBridge {
         else {
             JsonObject value = new JsonObject(); value.addProperty("id", companion.getUniqueID().toString());
             value.add("position", position(companion)); value.addProperty("health", companion.getHealth());
-            value.addProperty("task", companion.task()); value.addProperty("result", companion.lastResult()); state.add("companion", value);
+            value.addProperty("task", companion.task()); value.addProperty("result", companion.lastResult());
+            JsonObject carried = new JsonObject();
+            for (Map.Entry<String, Integer> entry : companion.inventoryCounts().entrySet()) {
+                carried.addProperty(entry.getKey(), entry.getValue());
+            }
+            value.add("inventory", carried); state.add("companion", value);
             final CompanionEntity center = companion;
             List<EntityLivingBase> nearby = new ArrayList<EntityLivingBase>();
             for (Object item : player.worldObj.getEntitiesWithinAABB(EntityLivingBase.class, companion.boundingBox.expand(16, 16, 16))) {
@@ -170,8 +177,25 @@ public final class ObservationBridge {
                 value2.addProperty("distance", Math.floor(mob.getDistanceToEntity(companion) / 2) * 2);
                 hostiles.add("mob-" + mob.getEntityId(), value2);
             }
+            List<EntityItem> dropped = new ArrayList<EntityItem>();
+            for (Object item : player.worldObj.getEntitiesWithinAABB(EntityItem.class, companion.boundingBox.expand(16, 16, 16))) {
+                EntityItem drop = (EntityItem) item;
+                ItemStack stack = drop.getEntityItem();
+                if (!drop.isDead && stack != null && stack.stackSize > 0
+                        && drop.getDistanceSqToEntity(companion) <= CompanionEntity.ITEM_RANGE_SQUARED) { dropped.add(drop); }
+            }
+            Collections.sort(dropped, new Comparator<EntityItem>() {
+                @Override public int compare(EntityItem a, EntityItem b) { return Double.compare(a.getDistanceSqToEntity(center), b.getDistanceSqToEntity(center)); }
+            });
+            for (int i = 0; i < Math.min(16, dropped.size()); i++) {
+                EntityItem drop = dropped.get(i); JsonObject value2 = new JsonObject();
+                Object name = Item.itemRegistry.getNameForObject(drop.getEntityItem().getItem());
+                value2.addProperty("type", name == null ? "unknown" : name.toString().replaceAll("[^A-Za-z0-9_.:-]", "_"));
+                value2.addProperty("distance", Math.floor(drop.getDistanceToEntity(companion) / 2) * 2);
+                items.add("item-" + drop.getEntityId(), value2);
+            }
         }
-        state.add("hostiles", hostiles); return state;
+        state.add("hostiles", hostiles); state.add("items", items); return state;
     }
 
     private void addItem(JsonObject inventory, ItemStack stack) {

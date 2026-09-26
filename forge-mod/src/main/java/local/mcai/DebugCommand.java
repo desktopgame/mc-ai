@@ -23,9 +23,9 @@ public final class DebugCommand {
             }
             return new DebugCommand(type, parts[2]);
         }
-        if (!(type.equals("spawn") || type.equals("follow") || type.equals("stop")
-                || type.equals("look") || type.equals("status") || type.equals("help")) || parts.length != 2) {
-            throw new IllegalArgumentException("使い方: !agent spawn / follow / stop / look / say メッセージ / status");
+        if (!(type.equals("spawn") || type.equals("follow") || type.equals("stop") || type.equals("look")
+                || type.equals("pickup") || type.equals("status") || type.equals("help")) || parts.length != 2) {
+            throw new IllegalArgumentException("使い方: !agent spawn / follow / stop / look / pickup / say メッセージ / status");
         }
         return new DebugCommand(type, "");
     }

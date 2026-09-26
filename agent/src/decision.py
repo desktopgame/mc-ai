@@ -12,9 +12,10 @@ from urllib import request, error, parse
 from context_budget import ContextBudget
 
 LOG = logging.getLogger("mcai.decision")
-GOALS = {"follow_owner": "follow", "stop": "stop", "look_at_owner": "look"}
-ACTIONS = ("follow", "stop", "look")
-REASONS = ("goal_follow", "goal_stop", "goal_look", "owner_near", "low_health", "owner_out_of_range", "unavailable_action")
+GOALS = {"follow_owner": "follow", "stop": "stop", "look_at_owner": "look", "pickup_item": "pickup"}
+ACTIONS = ("follow", "stop", "look", "pickup")
+REASONS = ("goal_follow", "goal_stop", "goal_look", "goal_pickup", "owner_near", "low_health",
+           "owner_out_of_range", "no_item_in_range", "unavailable_action")
 SYSTEM = (
     "Choose exactly one action from availableActions using only the supplied goal and state. "
     "The player is always the anonymous alias owner. Do not request or produce reasoning text. "
@@ -22,7 +23,10 @@ SYSTEM = (
     "For follow_owner: if owner is within 2 blocks choose follow owner/owner_near, "
     "keeping the follow task active so movement resumes when the owner moves away; "
     "if farther than 32 blocks choose stop/owner_out_of_range; otherwise follow owner/goal_follow. "
-    "For look_at_owner choose look owner/goal_look. If the desired action is unavailable, "
+    "For look_at_owner choose look owner/goal_look. "
+    "For pickup_item: if items.count is 0 choose stop/no_item_in_range; otherwise choose pickup/goal_pickup. "
+    "pickup takes no target: the game collects the nearest observed item itself. "
+    "If the desired action is unavailable, "
     "choose stop/unavailable_action if available. Output only the specified JSON object."
 )
 DECISION_SCHEMA = {
@@ -30,7 +34,7 @@ DECISION_SCHEMA = {
     "properties": {
         "decision": {"anyOf": [
             {"type": "object", "additionalProperties": False,
-             "properties": {"action": {"type": "string", "enum": ["stop"]}}, "required": ["action"]},
+             "properties": {"action": {"type": "string", "enum": ["stop", "pickup"]}}, "required": ["action"]},
             {"type": "object", "additionalProperties": False,
              "properties": {"action": {"type": "string", "enum": ["follow", "look"]},
                             "target": {"type": "string", "enum": ["owner"]}}, "required": ["action", "target"]}
@@ -60,6 +64,23 @@ def position(value):
     return [number(value[0], -30000000, 30000000), number(value[1], -2048, 2048), number(value[2], -30000000, 30000000)]
 
 
+def items_summary(value):
+    """Only how many items are reachable and how far the nearest one is; never names or ids."""
+    if value is None:
+        return {"count": 0, "nearestDistance": None}
+    if not isinstance(value, dict) or set(value) != {"count", "nearestDistance"}:
+        raise ValueError("invalid_items")
+    count = value["count"]
+    if type(count) is not int or not 0 <= count <= 16:
+        raise ValueError("invalid_item_count")
+    nearest = value["nearestDistance"]
+    if count == 0:
+        if nearest is not None:
+            raise ValueError("invalid_item_distance")
+        return {"count": 0, "nearestDistance": None}
+    return {"count": count, "nearestDistance": number(nearest, 0, 16)}
+
+
 def sanitize(payload):
     """Reconstruct an allowlisted payload; never forward caller dictionaries or free-form text."""
     if not isinstance(payload, dict) or type(payload.get("version")) is not int or payload["version"] != 1:
@@ -78,7 +99,8 @@ def sanitize(payload):
     return {"goal": {"type": goal["type"]},
             "state": {"companion": {"health": number(state["companion"].get("health"), 0, 20),
                                      "position": position(state["companion"].get("position"))},
-                      "owner": {"position": position(state["owner"].get("position"))}},
+                      "owner": {"position": position(state["owner"].get("position"))},
+                      "items": items_summary(state.get("items"))},
             "availableActions": list(actions)}
 
 
@@ -94,7 +116,7 @@ def validate_decision(value, payload):
     if not isinstance(action, dict) or type(action.get("action")) is not str or action["action"] not in payload["availableActions"]:
         raise DecisionError("unknown_or_unavailable_action")
     kind = action["action"]
-    if kind == "stop":
+    if kind in ("stop", "pickup"):
         if set(action) != {"action"}:
             raise DecisionError("invalid_parameters")
     elif set(action) != {"action", "target"} or action.get("target") != "owner":
@@ -106,6 +128,12 @@ def validate_decision(value, payload):
         raise DecisionError("unsafe_or_mismatched_action")
     if kind == "follow" and not 0 <= distance_squared(payload) <= 1024:
         raise DecisionError("unsafe_follow_distance")
+    # Pickup leaves the owner's side, so it keeps the same leash and needs something to collect.
+    if kind == "pickup":
+        if payload["state"]["items"]["count"] < 1:
+            raise DecisionError("no_item_to_pick_up")
+        if not 0 <= distance_squared(payload) <= 1024:
+            raise DecisionError("unsafe_pickup_distance")
     return copy.deepcopy(value)
 
 
@@ -113,17 +141,21 @@ class MockDecisionProvider:
     def decide(self, payload):
         goal = payload["goal"]["type"]
         action = GOALS[goal]
-        reason = {"follow": "goal_follow", "stop": "goal_stop", "look": "goal_look"}[action]
+        reason = {"follow": "goal_follow", "stop": "goal_stop", "look": "goal_look", "pickup": "goal_pickup"}[action]
         if payload["state"]["companion"]["health"] <= 6:
             action, reason = "stop", "low_health"
         elif action == "follow" and distance_squared(payload) <= 4:
             reason = "owner_near"
         elif action == "follow" and distance_squared(payload) > 1024:
             action, reason = "stop", "owner_out_of_range"
+        elif action == "pickup" and payload["state"]["items"]["count"] < 1:
+            action, reason = "stop", "no_item_in_range"
+        elif action == "pickup" and distance_squared(payload) > 1024:
+            action, reason = "stop", "owner_out_of_range"
         if action not in payload["availableActions"]:
             action, reason = "stop", "unavailable_action"
         decision = {"action": action}
-        if action != "stop":
+        if action not in ("stop", "pickup"):
             decision["target"] = "owner"
         return {"decision": decision, "reasonCode": reason}
 

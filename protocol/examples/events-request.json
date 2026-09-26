@@ -5,8 +5,9 @@
   "events": [
     {"type": "position_changed_significantly", "entity": "owner", "position": [12, 64, 0]},
     {"type": "health_changed", "entity": "companion", "health": 18},
-    {"type": "inventory_changed", "added": {"minecraft:torch": 3}, "removed": {"minecraft:stone": 1}},
+    {"type": "inventory_changed", "entity": "owner", "added": {"minecraft:torch": 3}, "removed": {"minecraft:stone": 1}},
     {"type": "task_changed", "task": "follow", "result": "following"},
-    {"type": "hostile_entered_range", "id": "mob-10", "observation": {"type": "Skeleton", "distance": 8}}
+    {"type": "hostile_entered_range", "id": "mob-10", "observation": {"type": "Skeleton", "distance": 8}},
+    {"type": "item_entered_range", "id": "item-11", "observation": {"type": "minecraft:diamond", "distance": 4}}
   ]
 }

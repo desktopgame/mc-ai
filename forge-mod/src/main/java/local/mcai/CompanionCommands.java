@@ -11,6 +11,7 @@ import net.minecraft.world.WorldServer;
 import net.minecraftforge.event.ServerChatEvent;
 import org.apache.logging.log4j.LogManager;
 import java.util.Locale;
+import java.util.Map;
 
 public final class CompanionCommands {
     private final ActionBridge actions;
@@ -32,7 +33,7 @@ public final class CompanionCommands {
 
     private void execute(EntityPlayerMP player, DebugCommand command) {
         if (command.type.equals("help")) {
-            reply(player, "!agent spawn / follow / stop / look / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop");
+            reply(player, "!agent spawn / follow / stop / look / pickup / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop|pickup");
             return;
         }
         CompanionEntity companion = find(player);
@@ -52,15 +53,25 @@ public final class CompanionCommands {
         } else {
             if (companion == null) { reply(player, "Companionが読み込まれていません。!agent spawn で確認してください。"); return; }
             if (companion.worldObj != player.worldObj) { reply(player, "Companionは別のディメンションにいます。"); return; }
-            if (command.type.equals("follow") || command.type.equals("look")) { actions.manualOverride(player); }
+            if (command.type.equals("follow") || command.type.equals("look") || command.type.equals("pickup")) { actions.manualOverride(player); }
             if (command.type.equals("follow")) { companion.follow(); reply(player, "ついていきます。"); }
             else if (command.type.equals("stop")) { companion.stop(); reply(player, "ここで待ちます。"); }
             else if (command.type.equals("look")) { companion.look(); reply(player, "そちらを向きます。"); }
+            else if (command.type.equals("pickup")) {
+                if (!companion.hasItemInRange()) { reply(player, "近くに拾えるアイテムがありません。"); return; }
+                companion.pickup(); reply(player, "落ちているものを拾いに行きます。");
+            }
             else if (command.type.equals("say")) { reply(player, command.text); }
             else if (command.type.equals("status")) {
                 reply(player, String.format(Locale.ROOT, "HP %.0f/%.0f | (%.1f, %.1f, %.1f) | task=%s | result=%s",
                         companion.getHealth(), companion.getMaxHealth(), companion.posX, companion.posY, companion.posZ,
                         companion.task(), companion.lastResult()));
+                Map<String, Integer> carried = companion.inventoryCounts();
+                StringBuilder items = new StringBuilder();
+                for (Map.Entry<String, Integer> entry : carried.entrySet()) {
+                    items.append(items.length() == 0 ? "" : ", ").append(entry.getKey()).append(" x").append(entry.getValue());
+                }
+                reply(player, "inventory: " + (items.length() == 0 ? "(空)" : items.toString()));
             }
         }
         LogManager.getLogger(CompanionMod.MOD_ID).info("Manual action={} accepted", command.type);

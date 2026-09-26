@@ -25,39 +25,45 @@ public final class ObservationDiff {
             if (distance >= 4.0D) { field("position_changed_significantly", entity, "position", now.get("position")); }
             else { now.add("position", old.get("position")); }
             if (!old.get("health").equals(now.get("health"))) { field("health_changed", entity, "health", now.get("health")); }
-        }
-        JsonObject before = previous.getAsJsonObject("owner").getAsJsonObject("inventory");
-        JsonObject after = state.getAsJsonObject("owner").getAsJsonObject("inventory");
-        if (!before.equals(after)) {
-            JsonObject added = new JsonObject(), removed = new JsonObject();
-            for (Map.Entry<String, JsonElement> item : after.entrySet()) {
-                int delta = item.getValue().getAsInt() - (before.has(item.getKey()) ? before.get(item.getKey()).getAsInt() : 0);
-                if (delta > 0) { added.addProperty(item.getKey(), delta); }
-            }
-            for (Map.Entry<String, JsonElement> item : before.entrySet()) {
-                int delta = item.getValue().getAsInt() - (after.has(item.getKey()) ? after.get(item.getKey()).getAsInt() : 0);
-                if (delta > 0) { removed.addProperty(item.getKey(), delta); }
-            }
-            JsonObject event = event("inventory_changed"); event.add("added", added); event.add("removed", removed);
+            inventory(entity, old.getAsJsonObject("inventory"), now.getAsJsonObject("inventory"));
         }
         if (!state.get("companion").isJsonNull()) {
             JsonObject old = previous.getAsJsonObject("companion"), now = state.getAsJsonObject("companion");
             if (!old.get("task").equals(now.get("task")) || !old.get("result").equals(now.get("result"))) {
                 String result = now.get("result").getAsString();
-                String type = result.equals("look_completed") ? "task_completed"
-                        : (result.equals("path_not_found") || result.equals("owner_unavailable") || result.equals("owner_out_of_range")) ? "task_failed" : "task_changed";
+                String type = (result.equals("look_completed") || result.equals("pickup_completed")) ? "task_completed"
+                        : (result.equals("path_not_found") || result.equals("owner_unavailable") || result.equals("owner_out_of_range")
+                           || result.equals("no_item_in_range") || result.equals("inventory_full")) ? "task_failed" : "task_changed";
                 JsonObject event = event(type); event.add("task", now.get("task")); event.add("result", now.get("result"));
             }
         }
-        before = previous.getAsJsonObject("hostiles"); after = state.getAsJsonObject("hostiles");
-        // Remove first so a capped observation set never grows beyond its limit while applying a batch.
-        for (Map.Entry<String, JsonElement> mob : before.entrySet()) {
-            if (!after.has(mob.getKey())) { event("hostile_left_range").addProperty("id", mob.getKey()); }
+        sightings(previous, "hostiles", "hostile");
+        sightings(previous, "items", "item");
+    }
+    private void inventory(String entity, JsonObject before, JsonObject after) {
+        if (before.equals(after)) { return; }
+        JsonObject added = new JsonObject(), removed = new JsonObject();
+        for (Map.Entry<String, JsonElement> item : after.entrySet()) {
+            int delta = item.getValue().getAsInt() - (before.has(item.getKey()) ? before.get(item.getKey()).getAsInt() : 0);
+            if (delta > 0) { added.addProperty(item.getKey(), delta); }
         }
-        for (Map.Entry<String, JsonElement> mob : after.entrySet()) {
-            if (!before.has(mob.getKey()) || !before.get(mob.getKey()).equals(mob.getValue())) {
-                JsonObject event = event(before.has(mob.getKey()) ? "hostile_updated" : "hostile_entered_range");
-                event.addProperty("id", mob.getKey()); event.add("observation", mob.getValue());
+        for (Map.Entry<String, JsonElement> item : before.entrySet()) {
+            int delta = item.getValue().getAsInt() - (after.has(item.getKey()) ? after.get(item.getKey()).getAsInt() : 0);
+            if (delta > 0) { removed.addProperty(item.getKey(), delta); }
+        }
+        JsonObject event = event("inventory_changed");
+        event.addProperty("entity", entity); event.add("added", added); event.add("removed", removed);
+    }
+    private void sightings(JsonObject previous, String collection, String prefix) {
+        JsonObject before = previous.getAsJsonObject(collection), after = state.getAsJsonObject(collection);
+        // Remove first so a capped observation set never grows beyond its limit while applying a batch.
+        for (Map.Entry<String, JsonElement> seen : before.entrySet()) {
+            if (!after.has(seen.getKey())) { event(prefix + "_left_range").addProperty("id", seen.getKey()); }
+        }
+        for (Map.Entry<String, JsonElement> seen : after.entrySet()) {
+            if (!before.has(seen.getKey()) || !before.get(seen.getKey()).equals(seen.getValue())) {
+                JsonObject event = event(before.has(seen.getKey()) ? prefix + "_updated" : prefix + "_entered_range");
+                event.addProperty("id", seen.getKey()); event.add("observation", seen.getValue());
             }
         }
     }

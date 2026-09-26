@@ -40,10 +40,37 @@ public class ObservationDiffTest {
         ObservationDiff diff = new ObservationDiff(old, now);
         assertFalse(diff.snapshot); assertEquals(4, diff.events.size());
         String events = diff.events.toString();
-        assertTrue(events.contains("inventory_changed")); assertTrue(events.contains("task_failed"));
+        assertTrue(events.contains("inventory_changed")); assertTrue(events.contains("\"entity\":\"owner\""));
+        assertTrue(events.contains("task_failed"));
         assertTrue(events.contains("hostile_entered_range")); assertFalse(events.contains("position"));
         assertEquals(0, new ObservationDiff(diff.state, now).events.size());
         now.getAsJsonObject("hostiles").remove("mob-1");
         assertTrue(new ObservationDiff(diff.state, now).events.toString().contains("hostile_left_range"));
+    }
+    @Test public void droppedItemsEnterUpdateAndLeaveRangeLikeHostiles() throws Exception {
+        JsonObject old = state(), now = state();
+        now.getAsJsonObject("items").add("item-7", new JsonParser().parse("{\"type\":\"minecraft:diamond\",\"distance\":6}"));
+        ObservationDiff entered = new ObservationDiff(old, now);
+        assertEquals(1, entered.events.size());
+        assertEquals("item_entered_range", entered.events.get(0).getAsJsonObject().get("type").getAsString());
+        now.getAsJsonObject("items").add("item-7", new JsonParser().parse("{\"type\":\"minecraft:diamond\",\"distance\":2}"));
+        ObservationDiff updated = new ObservationDiff(entered.state, now);
+        assertEquals(1, updated.events.size());
+        assertEquals("item_updated", updated.events.get(0).getAsJsonObject().get("type").getAsString());
+        now.getAsJsonObject("items").remove("item-7");
+        ObservationDiff left = new ObservationDiff(updated.state, now);
+        assertEquals(1, left.events.size());
+        assertEquals("item_left_range", left.events.get(0).getAsJsonObject().get("type").getAsString());
+    }
+    @Test public void companionInventoryAndPickupResultsAreReported() throws Exception {
+        JsonObject old = state(), now = state();
+        now.getAsJsonObject("companion").getAsJsonObject("inventory").addProperty("minecraft:diamond", 1);
+        now.getAsJsonObject("companion").addProperty("task", "idle");
+        now.getAsJsonObject("companion").addProperty("result", "pickup_completed");
+        String events = new ObservationDiff(old, now).events.toString();
+        assertTrue(events.contains("inventory_changed")); assertTrue(events.contains("\"entity\":\"companion\""));
+        assertTrue(events.contains("task_completed"));
+        now = state(); now.getAsJsonObject("companion").addProperty("result", "inventory_full");
+        assertTrue(new ObservationDiff(old, now).events.toString().contains("task_failed"));
     }
 }

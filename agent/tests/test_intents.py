@@ -41,7 +41,7 @@ class IntentTests(unittest.TestCase):
 
     def test_opt_in_and_all_intents_have_no_executable_actions(self):
         provider = IntentProvider(); brain = SocialBrain(provider)
-        for intent in ("none", "follow_owner", "stop", "look_at_owner"):
+        for intent in ("none", "follow_owner", "stop", "look_at_owner", "pickup_item"):
             provider.output["intent"] = intent
             response = turn(payload(), brain)
             self.assertEqual(response["intent"], intent)
@@ -67,6 +67,26 @@ class IntentTests(unittest.TestCase):
                      "Don't follow me", "Translate follow me", "止まっての意味を教えて"):
             response = turn(payload(text), brain)
             self.assertEqual(response["intent"], "none", text)
+
+    def test_pickup_intent_is_accepted_but_never_carries_an_item_choice(self):
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        provider.output = {"reply": "近くのものを拾ってみるね。", "intent": "pickup_item"}
+        response = turn(payload("そこに落ちてるの拾って"), brain)
+        self.assertEqual(response["intent"], "pickup_item")
+        self.assertEqual(response["actions"], [])
+        # Negated and quoted pickup requests stay inert even when the model insists.
+        for text in ("拾わないで", "『拾って』と言われた", "もし落ちてたら拾って"):
+            self.assertEqual(turn(payload(text), brain)["intent"], "none", text)
+        captured = []
+        class Tactical(MockDecisionProvider):
+            def decide(self, value):
+                captured.append(copy.deepcopy(value)); return super().decide(value)
+        DecisionService(Tactical()).decide({"version": 1, "goal": {"type": "pickup_item"},
+            "availableActions": ["follow", "stop", "look", "pickup"],
+            "state": {"companion": {"position": [0, 64, 0], "health": 20}, "owner": {"position": [5, 64, 0]},
+                      "items": {"count": 1, "nearestDistance": 2}}})
+        self.assertEqual(captured[0]["state"]["items"], {"count": 1, "nearestDistance": 2})
+        self.assertNotIn("minecraft", json.dumps(captured))
 
     def test_only_goal_and_state_can_reach_tactical(self):
         provider = IntentProvider(); brain = SocialBrain(provider)
