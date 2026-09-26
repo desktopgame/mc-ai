@@ -21,7 +21,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.12.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **76件**・Java **40件**とビルドに成功。実ゲームで `minecraft:stick` の基本収集（対象固定）を確認済み。部分収納・取消・経路失敗は未検証。
 
-## mine primitive — 0.0.16 / protocol 2
+## mine primitive — 0.0.17 / protocol 2
 
 `mine_target`（1 action = 1 block破壊）と、mine候補の上限付きblock観測を追加した。詳細は [mine primitive](protocol/mine-primitive.md) を参照。
 
@@ -37,8 +37,8 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.16.jar`。Daemonも同じ版へ更新する。
-2026-09-26: Python **82件**・Java **48件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊を確認済み。遮蔽の回り込み・leaves越し・count境界は未検証。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.17.jar`。Daemonも同じ版へ更新する。
+2026-09-26: Python **83件**・Java **48件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊と、ガラス越しの `blocked`（原木は破壊されない）を確認済み。回り込める壁越しの採掘・leaves越し・count境界は未検証。
 
 ## コンテキスト予算 — Daemon
 
@@ -393,7 +393,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.16`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.17`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -405,7 +405,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.16
+.\scripts\deploy-mod.ps1 -Version 0.0.17
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

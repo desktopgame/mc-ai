@@ -3,7 +3,7 @@
 ## 最初に読むもの
 
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
-mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.16、配置済み）。
+mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17、配置済み）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
 自動テストはPython 81件・Java 43件。基本の収集を実ゲームで確認済み（mine・部分収納・取消・経路失敗は未検証）。
@@ -20,15 +20,15 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.16`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.16.jar`（SHA-256 `0DEF1B6FBC6910D5FCF3144251F000ECD5A4FB378DE8B4DE0FFB803249C40665`）。0.0.15以前は `.disabled` |
-| Daemon | PID `38652` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（mine count=1 / blocked 反映）。`--shutdown-token` 付き |
+| MODバージョン | `0.0.17`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.17.jar`（SHA-256 `9847AE37AE8A91ED7357A2CDAB90FC18C45453A8E21E39F18ACC3EE04A89E681`）。0.0.16以前は `.disabled` |
+| Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（mine count=1 / blocked 即終端を反映）。`--shutdown-token` 付き |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **82件**・Java **45件**・Forgeビルド成功 |
+| 自動テスト | Python **83件**・Java **48件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映済み。** mine primitive（0.0.16）の遮蔽authority（採掘距離到達後に `MineTargetTask` で判定）を実機で確認する。0.0.15のcount=1固定とclaim前のidentity/type/range検証は維持。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
+**反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
 
 ## 実装済みの機能
 
@@ -49,10 +49,10 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
   レビュー反映: Skillを離れるときは `goal:null` のcancel handshakeを完了してから通常actionへ移る。terminal receiptは収納前にqueue枠を予約し、満杯時は pending として再送する（黙って捨てない）。Forgeは `timeoutMs` で単発actionを打ち切る。Daemonは取消receiptを再選択ではなくcancelledで終端する。
   control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
   lease/receipt追加反映: leaseは受理が確定したpollのみ更新（`stale_goal`/`conflicting_goal`/`stale_state`等の拒否では更新しない）。action receiptの `goalRevision` を該当Skillのrevisionと照合し、不一致は409。terminal後に届いた既知actionのreceiptはrecorded/ACKのみで `settled` に記録し、terminal resultとprogressは変えない（未知IDは409）。
-- **mine primitive（0.0.13→0.0.16 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
+- **mine primitive（0.0.13→0.0.17 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
   観測はCompanion周辺16ブロック（水平±16・垂直±8）のallowlist blockのみ。typeごとに最近傍4件・合計最大32候補（一律N件だと近いdirtがlog/oreを締め出すため）。Daemonはopaqueな `block-<x>_<y>_<z>`、registry名、距離だけを扱う。
   道具選択はForgeが決定的（`Material.isToolNotRequired()` なら素手、必須ツールが無ければ `tool_unavailable`）。破壊はblock hardnessとtool speedに応じた経時処理（`destroyBlockInWorldPartially`/`swingItem`）。
-  遮蔽/到達可能性のauthorityは採掘距離へ移動した後の `MineTargetTask`（`MineObstruction`＝`Material.isSolid()`＋leaves例外、MaterialLookupで純粋化）で、採掘開始前とworld変更直前の同一tickで block種・lease・遮蔽を再検証する。claim前は target identity/type/range のみ再検証し、現在位置からの直線遮蔽判定はしない（回り込める壁越しのtargetを誤除外しないため）。遮蔽時は `blocked`。邪魔なブロックは破壊しない（1 action = 1 block）。`mine` goal の count は1固定（2以上は `unsupported_count`）。
+  遮蔽/到達可能性のauthorityは採掘距離へ移動した後の `MineTargetTask`（`MineObstruction`＝`Material.isSolid()`＋leaves例外、MaterialLookupで純粋化）で、採掘開始前とworld変更直前の同一tickで block種・lease・遮蔽を再検証する。claim前は target identity/type/range のみ再検証し、現在位置からの直線遮蔽判定はしない（回り込める壁越しのtargetを誤除外しないため）。遮蔽時は `blocked`。観測候補が全て `blocked` なら**検索窓を待たず即座に**最終理由 `blocked`（`no_block_in_range` と区別）。邪魔なブロックは破壊しない（1 action = 1 block）。`mine` goal の count は1固定（2以上は `unsupported_count`）。
   進捗は `mined`、receiptは `destroyed:{block,count}` で `collect_drop` のprogressとは混ぜない。入口は `!agent do mine <ブロック>`。詳細は [protocol/mine-primitive.md](protocol/mine-primitive.md)。
 
 ### pickup / deposit の設計判断（重要）
@@ -98,7 +98,7 @@ Skillを増やすときは allowlist（Daemon `SUPPORTED_ITEMS`/`SUPPORTED_BLOCK
 
 ## 検証状況
 
-直近の自動検証はPython **82件**・Java **48件**・Forgeビルド成功（0.0.16時点）。
+直近の自動検証はPython **83件**・Java **48件**・Forgeビルド成功（0.0.17時点）。
 
 実ゲームで確認済み（0.0.9～0.0.14分）:
 
@@ -113,7 +113,7 @@ Skillを増やすときは allowlist（Daemon `SUPPORTED_ITEMS`/`SUPPORTED_BLOCK
 
 未確認・残る制限:
 
-- mine primitive（0.0.16）の遮蔽authorityと count=1 固定は自動テストのみ。solid wall越しの回り込み採掘・leaves越しは通る/glass・stone越しは `blocked`、を実機で未検証。
+- mine primitive（0.0.17）の遮蔽authority・`blocked` 即終端・失敗表示（理由先頭の短い文言）は実機確認済み。回り込めるsolid wall越しの採掘・leaves越しは未検証。
 - mine primitive（0.0.14）の経時破壊は実機確認済み。素手/道具の選択・`tool_unavailable`・連続採掘・block観測の網羅性は未検証。
 - Skill Layer（0.0.12）の基本収集は実機確認済み。部分収納（対象がmaxCountより少ない）・地面残量・取消・置換・経路失敗・満杯は未検証。
 - ワールド再入場後のCompanionインベントリ保持（NBT保存は実装済み・実機未検証）。
@@ -163,7 +163,7 @@ OpenALFix導入後も音声処理のクラッシュ記録があり、完全解�
 ```powershell
 .\scripts\forge.ps1 build                    # ビルド＋Javaテスト
 .\scripts\run-python-tests.ps1               # Pythonテスト（引数はそのまま渡せる: -v）
-.\scripts\deploy-mod.ps1 -Version 0.0.16     # Prismへ配置（ゲーム起動中なら中断）
+.\scripts\deploy-mod.ps1 -Version 0.0.17     # Prismへ配置（ゲーム起動中なら中断）
 .\scripts\restart-daemon.ps1                 # Daemon入れ替え（graceful shutdown→起動、二重起動を拒否）
 .\scripts\stop-daemon.ps1                    # Daemon停止のみ（loopback /local/shutdown、昇格不要）
 .\scripts\daemon-status.ps1                  # 待受PID・プロセス数・protocol行・token有無・ログ末尾（読取専用）
@@ -232,7 +232,7 @@ Phase 6の残りは `attack / place / craft / smelt`。`pickup` / `deposit` / `m
 - Daemonのログ: `.tools/daemon.stdout.log` / `.tools/daemon.stderr.log`、PID記録 `.tools/daemon.pid`（現在性は保証しない）。
   `intent-*` `lifecycle-*` `phase*-*` は過去セッションの記録。
 - ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`（MODの初期化・例外）と `latest.log`（チャット、CP932）。
-- 配置済み0.0.16のSHA-256: `0DEF1B6FBC6910D5FCF3144251F000ECD5A4FB378DE8B4DE0FFB803249C40665`。
+- 配置済み0.0.17のSHA-256: `9847AE37AE8A91ED7357A2CDAB90FC18C45453A8E21E39F18ACC3EE04A89E681`。
 - Claude向けの権限設定は `.claude/settings.json`（読み取り専用コマンド、上記3スクリプト、WebFetchの許可ドメイン）。
 
 古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。

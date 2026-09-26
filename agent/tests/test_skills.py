@@ -167,11 +167,20 @@ class SkillTests(unittest.TestCase):
         self.assertIsNotNone(view["action"])
         self.assertEqual(view["action"]["targetRef"], "block-b")
         manager.result(self.receipt(view["action"], "failed", "blocked", {"destroyed": {"block": "minecraft:log", "count": 0}}))
-        self.now[0] = SEARCH_WINDOW + 1
-        manager.tick()
         view = manager.update(mine_goal(1, epoch=self.epoch))
         self.assertEqual(view["status"], "failed")
-        self.assertEqual(view["skill"]["result"]["reason"], "no_block_in_range")
+        self.assertEqual(view["skill"]["result"]["reason"], "blocked")
+
+    def test_mine_blocked_candidate_then_accessible_succeeds(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(blocks={"block-a": block(4), "block-b": block(6)}, seq=1), True)
+        action = manager.update(mine_goal(1, epoch=self.epoch))["action"]
+        self.assertEqual(action["targetRef"], "block-a")
+        manager.result(self.receipt(action, "failed", "blocked", {"destroyed": {"block": "minecraft:log", "count": 0}}))
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertEqual(view["action"]["targetRef"], "block-b")
+        manager.result(self.receipt(view["action"], "succeeded", "completed", {"destroyed": {"block": "minecraft:log", "count": 1}}))
+        self.assertEqual(manager.update(mine_goal(1, epoch=self.epoch))["status"], "completed")
 
     def test_duplicate_and_conflicting_results(self):
         states, manager, self.epoch = self.create()

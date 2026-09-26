@@ -10,7 +10,7 @@ buildscript {
 
 apply plugin: 'forge'
 
-version = '0.0.16'
+version = '0.0.17'
 group = 'local.mcai'
 archivesBaseName = 'mc-ai-companion'
 sourceCompatibility = JavaVersion.VERSION_1_8

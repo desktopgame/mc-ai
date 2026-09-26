@@ -54,6 +54,7 @@ class Skill:
         self.issued = 0
         self.failures = 0
         self.saw_path_failure = False
+        self.saw_blocked = False
         self.excluded = set()
         self.current = None
         self.result = None
@@ -435,6 +436,11 @@ class SkillManager:
         skill.phase = "waiting_action"
 
     def _searching(self, skill, now, fresh):
+        if skill.saw_blocked:
+            # A candidate was observed but obstructed and no executable candidate remains: report it
+            # immediately instead of waiting out the search window.
+            self._finalize(skill, "failed", "blocked")
+            return
         if skill.search_started is None:
             skill.search_started = now
             return
@@ -517,6 +523,7 @@ class SkillManager:
             # A visible candidate is not necessarily executable. Skip it and try the next without
             # counting a consecutive failure; a future Skill/Planner will mine the obstruction.
             skill.excluded.add(target_ref)
+            skill.saw_blocked = True
             skill.phase = "selecting"
             self._step(skill)
             return

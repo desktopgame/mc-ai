@@ -455,7 +455,8 @@ public final class ActionBridge {
         } else if ("cancelled".equals(status)) {
             debugReply("指示を取り消しました。");
         } else {
-            reply(skillItem + " を完了できませんでした（" + reason + "、" + achieved + "/" + skillCount + "）。");
+            // Lead with the fixed reason so it stays visible even when the chat line wraps.
+            reply("失敗[" + reason + "] " + skillItem + " " + achieved + "/" + skillCount);
         }
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;

@@ -1,7 +1,7 @@
-# mine primitive — MOD 0.0.16 / protocol 2
+# mine primitive — MOD 0.0.17 / protocol 2
 
 状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加した増分。
-自動テストはPython 82件・Java 45件。基本の経時破壊は実ゲームで確認済み（遮蔽・count境界は未検証）。
+自動テストはPython 83件・Java 48件。基本の経時破壊は実ゲームで確認済み（遮蔽の回り込み・leaves越し・count境界は未検証）。
 
 ## 目的と固定した判断
 
@@ -34,7 +34,9 @@
   - 判定は `MineObstruction`（`Material.isSolid()` と leaves 例外、MaterialLookupで純粋化）で行い、独自の巨大allowlistは作らない。
   - 遮蔽時は `blocked` で失敗し、**邪魔なブロックを勝手に複数破壊しない**（1 action = 1 block維持）。
     将来は上位Skill/Plannerが obstruction を `mine_target` で先に処理する。
-  - `blocked` は失敗候補として除外して次の候補へ進み、連続失敗カウントには数えない。
+  - `blocked` は失敗候補として除外して次の候補へ進み、連続失敗カウントには数えない。他の到達可能な候補が
+    あればそちらで成功する。観測候補が存在しても全て `blocked` だった場合、検索窓を待たず**即座に**
+    最終理由 `blocked` で終端する（「候補ゼロ」の `no_block_in_range` と区別する）。
 
 ## 観測（v1 snapshot/delta に追加）
 
