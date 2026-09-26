@@ -42,6 +42,13 @@ public class IntentTest {
             assertFalse(text, ImmediateStop.matches(text));
         }
     }
+    /** Every intent the daemon may emit must round-trip, or the reply fails as a transport error. */
+    @Test public void everySupportedIntentIsAccepted() throws Exception {
+        String template = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"%s\"}";
+        for (String intent : new String[] {"none", "follow_owner", "stop", "look_at_owner", "pickup_item"}) {
+            assertEquals(intent, PingClient.parseSocialReply(String.format(template, intent)).intent);
+        }
+    }
     @Test public void unknownOrMalformedIntentNeverBecomesAnAction() throws Exception {
         String valid = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"follow_owner\"}";
         assertEquals("follow_owner", PingClient.parseSocialReply(valid).intent);

@@ -12,13 +12,20 @@ $daemonScript = Join-Path $repoRoot 'agent\src\daemon.py'
 $logDir = Join-Path $repoRoot '.tools'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
-$existing = Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" |
-    Where-Object { $_.CommandLine -and ($_.CommandLine.Contains('agent\src\daemon.py') -or $_.CommandLine.Contains('agent/src/daemon.py')) }
-foreach ($proc in $existing) {
+function Find-Daemons {
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' or Name='pythonw.exe'" |
+        Where-Object { $_.CommandLine -and ($_.CommandLine.Contains('agent\src\daemon.py') -or $_.CommandLine.Contains('agent/src/daemon.py')) }
+}
+
+foreach ($proc in Find-Daemons) {
     Write-Output "Stopping existing daemon: PID $($proc.ProcessId)"
     Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
 }
-if ($existing) { Start-Sleep -Seconds 1 }
+# Python's HTTPServer sets SO_REUSEADDR, so a survivor would silently share the port with the new
+# process and requests would land on either one. Never start while one is still alive.
+for ($i = 0; $i -lt 10 -and (Find-Daemons); $i++) { Start-Sleep -Milliseconds 500 }
+$survivors = Find-Daemons
+if ($survivors) { throw "Could not stop daemon PID $(($survivors.ProcessId) -join ', '). Stop it manually before retrying." }
 
 $stdout = Join-Path $logDir 'daemon.stdout.log'
 $stderr = Join-Path $logDir 'daemon.stderr.log'
@@ -36,4 +43,8 @@ for ($i = 0; $i -lt 10; $i++) {
     if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { $listening = $true; break }
 }
 if (-not $listening) { throw "Daemon did not start listening on port $Port. Check $stderr." }
+$running = @(Find-Daemons)
+if ($running.Count -ne 1) {
+    throw "Expected exactly one daemon, found $($running.Count) (PID $(($running.ProcessId) -join ', ')). Stop them all and retry."
+}
 Write-Output "Daemon listening on 127.0.0.1:$Port (PID $($proc.Id)). Logs: $stdout / $stderr"
