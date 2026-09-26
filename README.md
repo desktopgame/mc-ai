@@ -56,7 +56,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.21.jar`。
-2026-09-26: Python **118件**・Java **70件**とビルドに成功。実ゲーム検証は未。
+2026-09-26: Python **118件**・Java **70件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。
 
 ## コンテキスト予算 — Daemon
 

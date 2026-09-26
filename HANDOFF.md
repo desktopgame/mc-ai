@@ -81,7 +81,8 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
   - `CompanionEntity.java`: `pickupItem(targetRef,maxCount,itemName)` に拡張し、UUID一致でもregistry名不一致なら `target_lost`（実収納直前の同一性確認）。mine/pickupは既存を再利用。
   - `SkillExecutionState.java`: 同一Skill内の mine→pickup→mine で sequence前進・旧actionId再実行禁止を確認（追加テスト）。変更なし。
   - 追加テスト: `SkillProtocolTest` の collect_block view解析・progress union厳密性・対応表/capability・capability解析・混合sequence。Daemon側 `COLLECT_BLOCK_TARGETS` とJava `COLLECT_BLOCK_ITEMS` の一致は両言語のfixtureで固定（Python側 `test_collect_block_mapping_is_the_fixed_mvp_pair`）。
-- 未実装/要確認: 実ゲーム検証。**Daemonは再起動しないと `collect_block_v1` 未広告の旧コードのまま**で、MOD側のcapability確認により collect_block は「未対応」で止まる。ゲームも 0.0.21 読み込みに再起動が必要。
+- 実ゲーム: `!agent do collect_block minecraft:log 5` で原木を採掘→回収して完了することを確認済み（Daemon再起動＋ゲーム0.0.21読み込み後）。既存の collect_drop / mine / follow 等に退行なし。
+- 未消化: `ActionBridge` の配送→consume→claim を通す統合テスト（Minecraft依存のため未）、および §13 の一部異常系（収納満杯・回収途中停止・経路失敗・pause/退出）の実機確認。
 
 
 ## 実装済みの機能
