@@ -40,6 +40,19 @@ public class TerminalSocialTest {
         }
     }
 
+    @Test public void terminalCursorResetsPerBindingAndNeverGoesBackward() {
+        TerminalPollCursor cursor = new TerminalPollCursor();
+        assertEquals(0, cursor.afterSequence());
+        cursor.observe(3); cursor.observe(8); cursor.observe(5);
+        assertEquals(8, cursor.afterSequence());          // monotonic within one binding
+        cursor.schedule(100L);
+        assertFalse(cursor.due(100L));
+        assertTrue(cursor.due(100L + 1000000000L));
+        cursor.reset();                                   // world/session change
+        assertEquals(0, cursor.afterSequence());
+        assertTrue(cursor.due(0L));                       // a new session fetches from eventSequence 1
+    }
+
     @Test public void deliveryLedgerDisplaysAtMostOnceAndFirstWins() {
         TerminalDeliveryState state = new TerminalDeliveryState();
         long window = 12000;

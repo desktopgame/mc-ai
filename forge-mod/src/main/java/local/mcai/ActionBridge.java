@@ -48,10 +48,9 @@ public final class ActionBridge {
     // Terminal social delivery: independent of the current Skill lifecycle. Only used when the
     // Daemon advertises `skill_terminal_social_v1`; otherwise the old fixed display path is kept.
     private final TerminalDeliveryState deliveries = new TerminalDeliveryState();
+    private final TerminalPollCursor terminalPoll = new TerminalPollCursor();
     private boolean terminalCapable, terminalInFlight;
-    private int terminalCursor;
     private String terminalEpoch;
-    private long nextTerminalPoll;
     private volatile TerminalReply terminalReply;
     private PingBridge ping;
     private static final long TERMINAL_WINDOW_NANOS = 12000000000L;
@@ -113,6 +112,7 @@ public final class ActionBridge {
             }
             state.reset(session); intentOrder.reset(); sentRevision = -1; nextPoll = 0;
             terminalEpoch = null; terminalCapable = false; terminalReply = null; terminalInFlight = false;
+            terminalPoll.reset();   // a new (daemonEpoch, session) restarts terminal eventSequence at 1
             owner = player; expectedCompanion = null;
         }
     }
@@ -651,7 +651,7 @@ public final class ActionBridge {
                             String text = deliveries.finishFallback(event.identity());
                             if (text != null) { deliverTerminal(event.identity(), text); }
                         }
-                        if (event.eventSequence > terminalCursor) { terminalCursor = event.eventSequence; }
+                        terminalPoll.observe(event.eventSequence);
                     }
                 } catch (RuntimeException e) {
                     LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected terminal events ({})", e.getClass().getSimpleName());
@@ -662,7 +662,7 @@ public final class ActionBridge {
             String text = deliveries.finishFallback(identity);
             if (text != null) { deliverTerminal(identity, text); }
         }
-        if (!terminalInFlight && now >= nextTerminalPoll) { startTerminalFetch(); }
+        if (!terminalInFlight && terminalPoll.due(now)) { startTerminalFetch(); }
     }
 
     /** Routes a terminal fallback through the shared conversation queue so it orders with chat. */
@@ -677,8 +677,8 @@ public final class ActionBridge {
     private void startTerminalFetch() {
         final JsonObject body = new JsonObject();
         body.addProperty("version", 2); body.addProperty("daemonEpoch", terminalEpoch);
-        body.addProperty("session", state.session); body.addProperty("afterSequence", terminalCursor);
-        terminalInFlight = true; nextTerminalPoll = System.nanoTime() + 1000000000L;
+        body.addProperty("session", state.session); body.addProperty("afterSequence", terminalPoll.afterSequence());
+        terminalInFlight = true; terminalPoll.schedule(System.nanoTime());
         boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
             @Override public void run() {
                 JsonObject response = null;

@@ -1,6 +1,6 @@
 # Skill終端結果 → Social発話 — 実装指示書
 
-状態: **Phase 1〜4 実装済み（MOD 0.0.25、実ゲーム未確認）。Phase 5〜6 は未実装。** 2026-09-26、`develop` / `c5bdd36` を調査。
+状態: **Phase 1〜4 実装済み（MOD 0.0.26、実ゲーム未確認）。Phase 5〜6 は未実装。** 2026-09-26、`develop` / `c5bdd36` を調査。
 実装済み: snapshot schema/validator、PresentationDescriptor/reason辞書、Python/Java共通fixture、Daemon `TerminalEventStore`/outbox/dedupe/present-ACK台帳（有界・closed digestで再生成防止）、`/v2/terminal-events`・`/v2/social/skill-terminal`（fallbackのみ）・`/v2/social/terminal-delivery`、Forge `TerminalDeliveryState`・`TerminalPresentation`・terminal event取得/identity検証/重複排除・固定fallback一度表示・`skill_terminal_social_v1` capability gate・旧Daemon互換、`ConversationQueue` の typed entry と通常会話との単一順序・owner初期化・12秒FIFO例外・forget/退出 fence・CONTROL lane競合時のSkill制御優先。
 未実装（Phase 5〜6）: LLM候補選択、delivery ACKによる会話履歴登録、Daemon epoch変更時の旧作業表示、Forgeからのpresent/ACK送出。詳細は HANDOFF を参照。
 以下のAPI・クラス名は、現行と明記したもの以外は追加案である。
