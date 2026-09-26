@@ -57,6 +57,10 @@ def turn(payload, brain=None):
     return {"version": 1, "say": reply, "actions": []}
 
 
+def _is_loopback(host):
+    return host == "::1" or host.startswith("127.") or host == "localhost" or host.endswith(":127.0.0.1")
+
+
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
@@ -85,7 +89,24 @@ class Handler(BaseHTTPRequestHandler):
     def error_v2(self, status, code):
         self.respond(status, {"version": 2, "error": code})
 
+    def _shutdown(self):
+        # Loopback-only, optional shared token. Network I/O crosses the elevation boundary,
+        # so a non-elevated shell can stop an elevated Daemon without UAC.
+        if not _is_loopback(self.client_address[0]):
+            self.error(403, "forbidden")
+            return
+        token = getattr(self.server, "shutdown_token", None)
+        if token is not None and self.headers.get("X-MCAI-Token") != token:
+            self.error(403, "forbidden")
+            return
+        LOG.info("shutdown requested")
+        self.respond(200, {"version": 1, "shutdown": True})
+        threading.Thread(target=self.server.shutdown, daemon=True, name="mcai-shutdown").start()
+
     def do_POST(self):
+        if self.path == "/local/shutdown":
+            self._shutdown()
+            return
         if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state", "/v1/goal", "/v1/action-result") \
                 and self.path not in V2_PATHS:
             self.error(404, "not_found")
@@ -193,6 +214,7 @@ def main():
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--config", type=Path, help="Local SocialProvider JSON config; omitted = ping only")
     parser.add_argument("--decision-config", type=Path, help="Independent mock or local DecisionProvider config")
+    parser.add_argument("--shutdown-token", help="Optional shared secret required by POST /local/shutdown")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     brain = None
@@ -220,6 +242,7 @@ def main():
         server.goals = GoalManager(server.states, decisions)
         server.registry = ExecutionRegistry()
         server.skills = SkillManager(server.states, server.registry, goals=server.goals)
+        server.shutdown_token = args.shutdown_token
         stop = threading.Event()
         ticker = threading.Thread(target=_tick_loop, args=(server.skills, stop), daemon=True, name="mcai-skills")
         ticker.start()

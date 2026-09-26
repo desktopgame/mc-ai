@@ -26,7 +26,8 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 | 自動テスト | Python **71件**・Java **40件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映待ちがある。** レビュー指摘の修正がソースにあるため、ゲーム終了後に `deploy-mod.ps1 -Version 0.0.12` とDaemon再起動を行う（Daemonは管理者起動のため、停止は管理者PowerShellで）。
+**反映待ちがある。** レビュー指摘の修正と `/local/shutdown` がソースにあるため、ゲーム終了後に `.\scripts\restart-daemon.ps1` と `deploy-mod.ps1 -Version 0.0.12` を行う。
+現在稼働中のPID `42412` は `/local/shutdown` 実装前のため、**今回の入れ替えだけ**管理者シェル（またはタスクマネージャ）で停止する必要がある。以後は通常権限で良い。
 
 ## 実装済みの機能
 
@@ -165,6 +166,12 @@ Daemon再起動で会話履歴・キャッシュ・goalは消える。ワール�
 
 - **Daemonの二重起動**: PythonのHTTPServerは `allow_reuse_address` を設定するため、Windowsでは同一ポートへ二重bindが成功してしまう。
   どちらが応答するか不定で、ログファイルも共有して「動いていない」ように見える。必ず `restart-daemon.ps1` 経由で入れ替え、待受プロセスが1つか確認する。
+- **管理者権限の罠**: 管理者シェルでDaemonを起動すると、通常権限の `Stop-Process`/`taskkill` では停止できず（Access denied）、毎回昇格が必要になる。
+  `restart-daemon.ps1` はまず loopback HTTP `POST /local/shutdown`（`--shutdown-token` の共有トークン付き）で終了させるため、**管理者起動のDaemonでも通常権限から入れ替えられる**。
+  ただし `/local/shutdown` 実装前のDaemonは一度だけ管理者シェルかタスクマネージャで停止する。以後は通常のPowerShellから `restart-daemon.ps1` を実行すれば昇格不要。
+- **ツール実行時のハング**: `Start-Process` でDaemonを起動すると、呼び出し元シェルの子プロセスとして残り、opencode等のbashツールが子孫の終了を待って応答しなくなる。
+  `restart-daemon.ps1` は `Invoke-CimMethod Win32_Process Create` で起動して親を WmiPrvSE にし、呼び出し元から切り離す。ログは `cmd /c ... > stdout 2> stderr` で取得する。
+  ポート確認は `Get-NetTCPConnection`（約0.6秒）ではなく `TcpClient` の接続プローブ（数ms）を使う。
 - **PowerShellツールが使えないセッションがある**: `"hello"` すら「アクセスが拒否されました」になることがあった。
   その場合はBashから `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/xxx.ps1 > out 2>&1` で代用できる。
   出力をファイルへリダイレクトしないと、隠しプロセスがパイプを保持して呼び出しが戻らない。
