@@ -3,7 +3,7 @@
 ## 現在の役割
 
 Python標準ライブラリで会話・Tactical判断・観測キャッシュ・非同期goal・Skill進行を処理する。Skillはcollect_drop/mine/collect_block。Skillの確定終端を既存Social providerで表現する通知経路も実装済み。
-設定、起動例は本書、API索引は [Protocol](../protocol/README.md)、既知の制限は [knwon_issue.md](../knwon_issue.md) を参照。
+設定、起動例は本書、API索引は [Protocol](../protocol/README.md)、既知の制限は [known_issue.md](../known_issue.md) を参照。
 
 終端通知は同じpersonaと履歴を参照し、固定rendererの候補IDだけを生成する。実表示ACK後に内部イベントと表示文を履歴へ追加する。途中のPrimitive receipt、会話データをTacticalへ流す経路は追加しない。ACK欠落・履歴lock競合・forget・再起動・trim後の記憶は保証しない。
 terminal storeはメモリ内、outboxは100件・600秒。通常会話と通知は同じSocial lockを共有する。providerなしでもtyped Skillと固定結果表示は利用可能。会話/判断モデル設定を省略しても、観測とSkillの決定的なpolicyは使える。

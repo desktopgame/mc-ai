@@ -1,7 +1,7 @@
 # Minecraft 1.7.10 Local AI Companion — v0.1.0
 
 Minecraft Forge側でゲーム操作を実行し、PythonのAgent Daemonで会話・判断・Skillの進行を管理するローカルCompanionです。
-**v0.1.0は既知の問題を残した機能の区切りです。** 対象はローカルのシングルプレイヤー環境。未対応機能・不具合・検証不足は [knwon_issue.md](knwon_issue.md) に集約しています。
+**v0.1.0は既知の問題を残した機能の区切りです。** 対象はローカルのシングルプレイヤー環境。未対応機能・不具合・検証不足は [known_issue.md](known_issue.md) に集約しています。
 
 ## できること
 
@@ -52,7 +52,7 @@ Gradle wrapperと固定JDK用スクリプトを同梱しています。初回の
 .\scripts\deploy-mod.ps1 -Version 0.1.0
 ```
 
-配置先の既定はPrismの `1.7.10-mod-basic`。この検証環境ではOpenALFix導入後に起動できた記録がありますが、音声系の安定性は別途 [既知の問題](knwon_issue.md#ki-06-音声系クラッシュの過去報告) を参照してください。
+配置先の既定はPrismの `1.7.10-mod-basic`。この検証環境ではOpenALFix導入後に起動できた記録がありますが、音声系の安定性は別途 [既知の問題](known_issue.md#ki-06-音声系クラッシュの過去報告) を参照してください。
 
 `agent/config.example.json` と `agent/decision.local.example.json` を参考にGit管理外の `config.local.json` / `decision.local.json` を作成し、モデル・URL・実際のcontext長を合わせます。既存ファイルを上書きしないでください。
 検証時のモデルは `unsloth/gemma-4-26b-a4b-it`、LM Studioは `http://127.0.0.1:1234/v1`。これらは環境例で、起動中の状態を示すものではありません。
@@ -88,7 +88,7 @@ v0.1.0準備時の結果は [リリース記録](RELEASE_NOTES.md) に記載。�
 ## ドキュメント
 
 - [引き継ぎ](HANDOFF.md): 現在地と再開手順
-- [既知の問題](knwon_issue.md): 不具合・設計制限・実機未検証を区別
+- [既知の問題](known_issue.md): 不具合・設計制限・実機未検証を区別
 - [通信仕様の索引](protocol/README.md): v1/v2の入口
 - [全体構想](init.md): 将来計画を含む設計。実装済み一覧ではない
 - [過去の開発記録](development-history.md): v0.1.0以前のREADME/HANDOFFを保存

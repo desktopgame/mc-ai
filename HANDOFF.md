@@ -4,7 +4,7 @@
 
 ## 最初に読むもの
 
-[README](README.md) → [既知の問題](knwon_issue.md) → [リリース記録](RELEASE_NOTES.md) → [通信仕様](protocol/README.md)。
+[README](README.md) → [既知の問題](known_issue.md) → [リリース記録](RELEASE_NOTES.md) → [通信仕様](protocol/README.md)。
 `init.md` は将来構想を含む。作業ログを追加しない。過去の段階別の変更・検証は [development-history.md](development-history.md) に退避した。
 
 ## 現在の実装
@@ -28,7 +28,7 @@
 | forget中生成の結果欠落 | in-flightを含む未表示結果をfallbackで解決してからreset |
 | cleanup取りこぼし | pendingCleanupを通知種別から独立して保持 |
 
-コード反映を確認したことと、全異常系の実ゲーム検証は別。残る問題と検証不足は [knwon_issue.md](knwon_issue.md) を参照。利用者から修正後にも問題が残るとの報告あり。症状未特定のものを解決済みにしない。
+コード反映を確認したことと、全異常系の実ゲーム検証は別。残る問題と検証不足は [known_issue.md](known_issue.md) を参照。利用者から修正後にも問題が残るとの報告あり。症状未特定のものを解決済みにしない。
 
 ## 再開時の確認
 

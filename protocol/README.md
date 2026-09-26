@@ -15,7 +15,7 @@ MOD v0.1.0はwire protocol v1/v2を併用する。以下のPhases 1～5の説明
 
 [行動ライフサイクル](action-lifecycle.md)、[Skill Layer](skill-layer.md)、[mine](mine-primitive.md)、[collect_block](collect-block.md)、[終端Social通知](skill-terminal-social.md)。
 v2にlegacy文字列goalを送らない（拒否）。観測にはblocksも含み、item参照は実UUID由来。モデルへのprojectionとは別の層である。
-実装と設計の差分・保存上限は [既知の問題](../knwon_issue.md) を参照。
+実装と設計の差分・保存上限は [既知の問題](../known_issue.md) を参照。
 
 ## コンテキスト予算超過
 

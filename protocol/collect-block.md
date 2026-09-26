@@ -1,6 +1,6 @@
 # collect_block — v0.1.0
 
-> 現行版に実装済み。以下の0.0.x・段階別の件数は導入時の記録。最新の確認範囲は [リリース記録](../RELEASE_NOTES.md)、残課題は [既知の問題](../knwon_issue.md) を参照。設計上の受入条件をすべて実機検証済みとするものではない。
+> 現行版に実装済み。以下の0.0.x・段階別の件数は導入時の記録。最新の確認範囲は [リリース記録](../RELEASE_NOTES.md)、残課題は [既知の問題](../known_issue.md) を参照。設計上の受入条件をすべて実機検証済みとするものではない。
 
 状態: **Daemon・Forge とも実装済み（MOD 0.0.22）。実ゲームで基本動作を確認済み。** 調査基点 `c5d491c`、MOD 0.0.20 → 0.0.21 → 0.0.22（Forge hardening）。
 既存の [Skill Layer](skill-layer.md) と [mine primitive](mine-primitive.md) を利用する。

@@ -7,11 +7,11 @@
 
 Companionの手動操作・所持品保存、ローカルSocial会話と限定intent、独立したTactical判断、観測同期、非同期goal/割り込み、collect_drop/mine/collect_block、Skill終端の候補選択発話と固定fallback。
 
-0.0.31までに前回レビューの5件へコード修正が入っている。ただし無制限・永続の通知配送や全異常系の実機確認は保証しない。残課題は [knwon_issue.md](knwon_issue.md)。
+0.0.31までに前回レビューの5件へコード修正が入っている。ただし無制限・永続の通知配送や全異常系の実機確認は保証しない。残課題は [known_issue.md](known_issue.md)。
 
 ## 今回の確認
 
-- Python: 155件。初回はHTTPエラーテストでWinError 10053が1件発生。全体を再実行して155件成功。初回失敗は [KI-10](knwon_issue.md#ki-10-httpエラーテストで接続中断を観測) として記録。
+- Python: 155件。初回はHTTPエラーテストでWinError 10053が1件発生。全体を再実行して155件成功。初回失敗は [KI-10](known_issue.md#ki-10-httpエラーテストで接続中断を観測) として記録。
 - Java: 83件成功。`build --offline --rerun-tasks` で再実行。
 - Forge: build成功。mcmod.info更新後にも再buildし、jar内version=0.1.0を確認。
 - 文書:主要ドキュメントのローカルリンクとgit diffの空白エラーを検査。
