@@ -52,6 +52,12 @@ public class TerminalSocialTest {
         }
     }
 
+    @Test public void terminalDisplayDecisionSuppressesAfterResetOrOwnerLoss() {
+        assertTrue(TerminalAckPolicy.shouldDisplay(3, 3, true));    // normal: display then displayed ACK
+        assertFalse(TerminalAckPolicy.shouldDisplay(3, 4, true));   // reset/forget before completion
+        assertFalse(TerminalAckPolicy.shouldDisplay(3, 3, false));  // owner/world lost before completion
+    }
+
     @Test public void terminalCursorResetsPerBindingAndNeverGoesBackward() {
         TerminalPollCursor cursor = new TerminalPollCursor();
         assertEquals(0, cursor.afterSequence());

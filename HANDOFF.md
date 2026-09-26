@@ -14,7 +14,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>`、`!agent do mine <ブロック>`、`!agent do collect_block minecraft:log <個数>`、v2 typed protocol。Planner・自然文からのSkill引数抽出は範囲外。
-自動テストはPython 150件・Java 82件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知は自動テスト範囲（実ゲーム未確認）。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 150件・Java 83件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知は自動テスト範囲（実ゲーム未確認）。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -28,12 +28,12 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.28`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.28.jar`（SHA-256 `714F350DB13844926FA9934ADBFA38C23C5DE67042459846612A58D0A758FC9C`）。0.0.27以前は `.disabled` |
+| MODバージョン | `0.0.29`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.29.jar`（SHA-256 `9880BCCCDA15D199152917F3A28C1563EC1AD9EC3A7B70F32BEB944F15779C78`）。0.0.28以前は `.disabled` |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **150件**・Java **82件**・Forgeビルド成功 |
+| 自動テスト | Python **150件**・Java **83件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -91,7 +91,7 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
   - 追加Javaテスト4件: binding不一致/許可（instance・type・target・未対応action）、goal binding、terminal result/progress不一致・completed不変条件・phase/result整合、混合sequence claim。Java 74件。
 - 未消化: `ActionBridge` の配送→consume→claim を通す統合テスト（Minecraft依存のため未）、および §13 の一部異常系（収納満杯・回収途中停止・経路失敗・pause/退出）の実機確認。
 
-## Skill終端 → Social発話 — Phase 1〜6（0.0.28）
+## Skill終端 → Social発話 — Phase 1〜6（0.0.29）
 
 仕様 [protocol/skill-terminal-social.md](protocol/skill-terminal-social.md) の段階1〜3を実装。**事実のauthorityはSkillの確定terminal result**、Socialは表現のみ、Forgeはworld/表示のauthority。LLM候補選択・conversation履歴登録はPhase 4〜6で未実装。
 
@@ -112,7 +112,8 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
 - **Phase 4追補（0.0.26）**: terminal poll cursorを `TerminalPollCursor`（純粋）へ分離し、world/session切替の `synchronize()` で `terminalPoll.reset()`（afterSequence=0, nextPoll=0）。新 `(daemonEpoch, session)` は eventSequence=1 から取得でき、旧cursorを持ち越さない。`observe` はbinding内で単調。テスト: `terminalCursorResetsPerBindingAndNeverGoesBackward`。
 - **Phase 5（0.0.27）**: 既存providerで候補選択。`terminal_presentation.render_candidates` が friendly/calm/concise の**事実完全な3候補**（≤512、Python/Java同一）を生成。`LocalSocialProvider.select_terminal` は通常chatと同じprovider設定・persona・予算で、候補IDのenumに限定した厳密schema＋8秒deadline。`SocialBrain.present_terminal` は固定rendererではなく**候補IDを選ばせ**、sayを候補から復元（自由文・intent・追加キー・未知IDは `SocialError`）。transport情報（session/epoch/UUID）はLLMへ送らない。`/v2/social/skill-terminal` は presentation台帳で generating/ready を管理し、**同じrequestでproviderを二重に呼ばない**。provider未設定/busy/例外/予算超過は固定fallback（mode=fallback）で同一say。fallback fixtureは candidates も含みPython/Java一致を検証。追加テスト: candidates fixture一致（Py/Java）、present_terminalのprovider選択/失敗/ busy、endpointの provider1回・二重present・fallback。
 - **Phase 5追補**: terminal presentationは通常chatと**同じconversation identity `(conversationSession, player)`** の履歴を `budget.prepare` に渡して参照する（読むだけ。terminal自体は履歴へ追加しない。別conversationの履歴は混ざらない）。presentation生成競合は first-wins: `present_begin` の duplicate（generating中）はその場で fallback を ready 確定し、遅れて来たprovider結果は `present_finish` が上書きしない。ACK後も closed と整合（ACK済みvariantと矛盾するresponseを返さない、closedを再openしない）。追加テスト: 履歴参照/非更新/別会話分離、generating duplicateのfirst-winsとACK後整合。
-- **Phase 6（0.0.28）**: delivery ACKで履歴登録を接続。`/v2/social/terminal-delivery` の **displayed ACK時だけ**、`SocialBrain.register_terminal` が通常chatと同じ `(conversationSession, player)` 履歴へ `[内部イベント skill_terminal] <確定事実>` / assistant(実表示say) の1ペアを一度だけ追加（suppressed/重複ACKは追加なし、variant不一致・ACK後のlate providerは409/据置）。forgetは削除がbusyでも先にsessionをretired記録し、通知生成・ACK・遅着chat commitによる履歴再作成を拒否。Forgeは `PingBridge` のSOCIAL workerで `/v2/social/skill-terminal` を呼び、返却sayが**自分の候補集合に一致するときだけ採用**（不一致は固定fallback）、表示後に `/v2/social/terminal-delivery` を最大2回・短期限で送る（失敗しても表示・Skillは巻き戻さない）。12秒未表示はfallback表示＋ACK。退出/world変更はpending分をsuppressed。追加テスト: displayed ACKで1ペア・重複ACKで増えない・suppressedで追加なし・variant不一致409・forget retirement（履歴非再作成）。
+- **Phase 6（0.0.28）**: delivery ACKで履歴登録を接続。`/v2/social/terminal-delivery` の **displayed ACK時だけ**、`SocialBrain.register_terminal` が通常chatと同じ `(conversationSession, player)` 履歴へ `[内部イベント skill_terminal] <確定事実>` / assistant(実表示say) の1ペアを一度だけ追加（suppressed/重複ACKは追加なし、variant不一致・ACK後のlate providerは409/据置）。forgetは削除がbusyでも先にsessionをretired記録し、通知生成・ACK・遅着chat commitによる履歴再作成を拒否。Forgeは `PingBridge` のSOCIAL workerで `/v2/social/skill-terminal` を呼び、返却sayが**自分の候補集合に一致するときだけ採用**（不一致は固定fallback）。12秒未表示はfallback表示＋ACK。
+- **Phase 6追補（0.0.29）**: 表示とACKの順序を修正。SOCIAL workerは**presentation選択のみ**を行い、完了情報 `TerminalDone(epoch, identity, request, say, variantId)` をgame threadへ渡す。game threadで `TerminalAckPolicy.shouldDisplay(epoch, conversationEpoch, ownerPresent)` を判定し、**表示可能なら `reply(say)` → その後 displayed ACK**、reset/forget/owner・world変更後なら **suppressed ACK**（表示なし・history登録なし）。`reset()` が先にsuppressedを送っていても後段はepoch不一致でsuppressedに留まり、reset後displayed ACKを送ることはない。追加テスト: `TerminalAckPolicy` 判定、既存の displayed=1ペア/suppressed=0/duplicate増加なしを維持。
 - 未実装/未確認: Daemon epoch変更時の「旧作業」明示表示。実ゲーム未確認（present/ACK接続・履歴登録・retirementは自動テストのみ）。
 
 

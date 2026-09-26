@@ -51,8 +51,10 @@ public final class PingBridge {
         Completion(ConversationQueue.Turn turn, PingClient.Reply reply) { this.turn = turn; this.reply = reply; }
     }
     private static final class TerminalDone {
-        final long epoch; final String identity, say;
-        TerminalDone(long epoch, String identity, String say) { this.epoch = epoch; this.identity = identity; this.say = say; }
+        final long epoch; final String identity, say, variantId; final TerminalRequest request;
+        TerminalDone(long epoch, String identity, TerminalRequest request, String say, String variantId) {
+            this.epoch = epoch; this.identity = identity; this.request = request; this.say = say; this.variantId = variantId;
+        }
     }
     public PingBridge(String url, ActionBridge actions, IoExecutors io, boolean verbose) {
         client = new PingClient(url); this.actions = actions; this.io = io; this.verbose = verbose;
@@ -149,25 +151,15 @@ public final class PingBridge {
                 } catch (Exception e) {
                     LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal presentation fallback ({})", e.getClass().getSimpleName());
                 }
-                ackAsyncInline(request, "displayed", variantId);
-                terminalDone = new TerminalDone(epoch, turn.identity, say);
+                // Presentation only. Display and the displayed/suppressed ACK happen on the game thread,
+                // so history is registered only for a terminal that was actually shown.
+                terminalDone = new TerminalDone(epoch, turn.identity, request, say, variantId);
             }
         });
         if (!accepted) {
             inFlight = false; reply(request.fallback); terminalRequests.remove(turn.identity);
             ackAsync(request, "displayed", "fallback");
         }
-    }
-
-    private void ackAsyncInline(TerminalRequest request, String outcome, String variantId) {
-        for (int attempt = 0; attempt < 2; attempt++) {
-            try {
-                if (client.deliverTerminal(request.player, request.conversationSession, request.deliveryId,
-                        request.daemonEpoch, request.execSession, request.skillInstanceId, request.terminalId,
-                        outcome, variantId)) { return; }
-            } catch (Exception e) { /* best effort */ }
-        }
-        LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal delivery ACK failed outcome={}", outcome);
     }
 
     @SubscribeEvent public void onChat(ServerChatEvent event) {
@@ -205,7 +197,14 @@ public final class PingBridge {
         TerminalDone finished = terminalDone;
         if (finished != null) {
             terminalDone = null; inFlight = false;
-            if (finished.epoch == conversationEpoch && owner != null) { reply(finished.say); }
+            if (TerminalAckPolicy.shouldDisplay(finished.epoch, conversationEpoch, owner != null)) {
+                reply(finished.say);   // display first...
+                ackAsync(finished.request, "displayed", finished.variantId);   // ...then the displayed ACK
+            } else {
+                // reset / forget / owner or world change happened before the completion: never display
+                // and never register history; a duplicate suppressed ACK is idempotent on the Daemon.
+                ackAsync(finished.request, "suppressed", null);
+            }
             terminalRequests.remove(finished.identity);
         }
         if (owner != null) { showExpiredTerminals(System.nanoTime()); }
