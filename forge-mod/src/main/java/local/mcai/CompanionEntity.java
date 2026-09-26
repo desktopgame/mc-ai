@@ -42,6 +42,8 @@ public final class CompanionEntity extends EntityCreature {
     private String mineBlockName = "";
     private int minedStored = -1;
     private String mineOutcome = "";
+    private float mineDamage;
+    private int mineSwingTicks;
 
     public CompanionEntity(World world) {
         super(world);
@@ -108,6 +110,7 @@ public final class CompanionEntity extends EntityCreature {
         mineX = Integer.parseInt(parts[0]); mineY = Integer.parseInt(parts[1]); mineZ = Integer.parseInt(parts[2]);
         mineBlockName = blockName;
         minedStored = -1; mineOutcome = "";
+        mineDamage = 0.0F; mineSwingTicks = 0;
         task = "mine";
         result("mining");
     }
@@ -243,16 +246,21 @@ public final class CompanionEntity extends EntityCreature {
         return block.getMaterial().isToolNotRequired();
     }
 
+    /** Clears the client-side breaking overlay for this companion's current mine target. */
+    private void resetMineProgress() {
+        worldObj.destroyBlockInWorldPartially(getEntityId(), mineX, mineY, mineZ, -1);
+    }
+
     /** Breaks one block with the best tool, or fails tool_unavailable when a required tool is missing. */
     private void breakBlock(Block block, int x, int y, int z) {
         int meta = worldObj.getBlockMetadata(x, y, z);
         ItemStack tool = bestTool(block, meta);
         if (tool == null && !handCanHarvest(block, meta)) {
-            stop(); minedStored = 0; mineOutcome = "tool_unavailable"; result("tool_unavailable"); return;
+            resetMineProgress(); stop(); minedStored = 0; mineOutcome = "tool_unavailable"; result("tool_unavailable"); return;
         }
         block.dropBlockAsItemWithChance(worldObj, x, y, z, meta, 1.0F, 0);
         worldObj.setBlockToAir(x, y, z);
-        stop(); minedStored = 1; mineOutcome = "completed"; result("mine_completed");
+        resetMineProgress(); stop(); minedStored = 1; mineOutcome = "completed"; result("mine_completed");
     }
 
     private EntityPlayer owner() {
@@ -426,29 +434,50 @@ public final class CompanionEntity extends EntityCreature {
         @Override public boolean shouldExecute() { return task.equals("mine"); }
         @Override public boolean continueExecuting() { return shouldExecute(); }
         @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
-        @Override public void resetTask() { getNavigator().clearPathEntity(); }
+        @Override public void resetTask() { getNavigator().clearPathEntity(); if (!mineBlockName.isEmpty()) { resetMineProgress(); } }
         @Override public void updateTask() {
             Block block = worldObj.getBlock(mineX, mineY, mineZ);
             Object name = block == Blocks.air ? null : Block.blockRegistry.getNameForObject(block);
             if (name == null || !name.toString().equals(mineBlockName)) {
-                stop(); minedStored = 0; mineOutcome = "target_lost"; result("no_block_in_range"); return;
+                resetMineProgress(); stop(); minedStored = 0; mineOutcome = "target_lost"; result("no_block_in_range"); return;
             }
             getLookHelper().setLookPosition(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D, 30.0F, 30.0F);
             double distance = getDistanceSq(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D);
-            if (distance <= 20.25D) {
-                getNavigator().clearPathEntity();
-                if (System.nanoTime() > controlDeadline) {
-                    stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;
+            if (distance > 20.25D) {
+                // Out of reach: cancel the partial break and walk closer.
+                resetMineProgress(); mineDamage = 0.0F;
+                if (--retryTicks <= 0) {
+                    retryTicks = 20;
+                    boolean found = getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
+                    boolean exhausted = pathRetry.exhausted(found);
+                    result(found ? "mining" : exhausted ? "path_not_found" : "path_retrying");
                 }
+                return;
+            }
+            getNavigator().clearPathEntity();
+            if (System.nanoTime() > controlDeadline) {
+                resetMineProgress(); stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;
+            }
+            int meta = worldObj.getBlockMetadata(mineX, mineY, mineZ);
+            ItemStack tool = bestTool(block, meta);
+            if (tool == null && !handCanHarvest(block, meta)) {
+                resetMineProgress(); stop(); minedStored = 0; mineOutcome = "tool_unavailable"; result("tool_unavailable"); return;
+            }
+            float hardness = block.getBlockHardness(worldObj, mineX, mineY, mineZ);
+            if (hardness <= 0.0F) {
+                if (hardness < 0.0F) { resetMineProgress(); stop(); minedStored = 0; mineOutcome = "tool_unavailable"; result("tool_unavailable"); return; }
                 breakBlock(block, mineX, mineY, mineZ);
                 return;
             }
-            if (--retryTicks <= 0) {
-                retryTicks = 20;
-                boolean found = getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
-                boolean exhausted = pathRetry.exhausted(found);
-                result(found ? "mining" : exhausted ? "path_not_found" : "path_retrying");
-            }
+            // Player-like timing: harvestable blocks use tool speed, otherwise hand speed is heavily reduced.
+            boolean harvest = (tool != null && tool.canItemHarvestBlock(block)) || handCanHarvest(block, meta);
+            float speed = tool != null ? tool.getStrVsBlock(block) : 1.0F;
+            if (speed < 1.0F) { speed = 1.0F; }
+            mineDamage += (harvest ? speed : 1.0F) / hardness / (harvest ? 30.0F : 100.0F);
+            worldObj.destroyBlockInWorldPartially(getEntityId(), mineX, mineY, mineZ, (int) Math.min(9.0F, mineDamage * 10.0F));
+            if (++mineSwingTicks >= 5) { mineSwingTicks = 0; swingItem(); }
+            result("mining");
+            if (mineDamage >= 1.0F) { breakBlock(block, mineX, mineY, mineZ); }
         }
     }
 }

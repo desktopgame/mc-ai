@@ -21,20 +21,21 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.12.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **76件**・Java **40件**とビルドに成功。実ゲームで `minecraft:stick` の基本収集（対象固定）を確認済み。部分収納・取消・経路失敗は未検証。
 
-## mine primitive — 0.0.13 / protocol 2
+## mine primitive — 0.0.14 / protocol 2
 
 `mine_target`（1 action = 1 block破壊）と、mine候補の上限付きblock観測を追加した。詳細は [mine primitive](protocol/mine-primitive.md) を参照。
 
 | 入力 | 動作 |
 | --- | --- |
-| `!agent do mine minecraft:log` | v2 `/v2/goal`（`type:mine`）→ 対象ブロックへ移動し、1ブロック破壊 |
+| `!agent do mine minecraft:log` | v2 `/v2/goal`（`type:mine`）→ 対象ブロックへ移動し、プレイヤーと同じ経時破壊で1ブロック破壊 |
 
 - 観測はCompanion周辺16ブロック（水平±16・垂直±8）の**allowlist blockのみ**、block typeごとに最近傍4件・合計最大32候補。実座標はDaemonへ渡さず、`block-<x>_<y>_<z>` のopaque参照とregistry名・距離だけを送る。
 - 道具選択はForgeが決定的に行う。素手で掘れるブロックは素手、必須ツールが無ければ `tool_unavailable`。自動クラフトはしない。
+- 破壊は block hardness と tool speed に応じた時間がかかり、`destroyBlockInWorldPartially` の破壊アニメーションと `swingItem` を伴う。
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.13.jar`。Daemonも同じ版へ更新する。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.14.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **81件**・Java **43件**とビルドに成功。実ゲーム検証は未実施。
 
 ## コンテキスト予算 — Daemon
@@ -390,7 +391,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.13`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.14`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -402,7 +403,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.13
+.\scripts\deploy-mod.ps1 -Version 0.0.14
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

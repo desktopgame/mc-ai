@@ -60,6 +60,7 @@
       "PowerShell(.\\scripts\\show-daemon-logs.ps1 *)",
       "PowerShell(.\\scripts\\read-mc-source.ps1)",
       "PowerShell(.\\scripts\\read-mc-source.ps1 *)",
+      "PowerShell(.\\scripts\\*)",
 
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",

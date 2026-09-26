@@ -72,6 +72,10 @@
       "./scripts/read-mc-source.ps1*": "allow",
       ".\\scripts\\read-mc-source.ps1*": "allow",
 
+      ".\\scripts\\*": "allow",
+      "./scripts/*": "allow",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\*": "allow",
+
       "git push*": "ask",
       "git pull*": "ask",
       "uv run *": "ask",

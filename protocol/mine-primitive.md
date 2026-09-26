@@ -1,4 +1,4 @@
-# mine primitive — MOD 0.0.13 / protocol 2
+# mine primitive — MOD 0.0.14 / protocol 2
 
 状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加した増分。
 自動テストはPython 81件・Java 43件。実ゲーム検証は未実施。
@@ -16,6 +16,9 @@
 - 道具選択はForge側で決定的に行う。自動クラフトは行わない。
 - 素手で採掘可能（`Material.isToolNotRequired()`）なら素手で破壊。必須ツールが無ければ
   `tool_unavailable` で失敗。ツールがあれば最も採掘速度の高いものを選ぶ。
+- 破壊はプレイヤーと同じく **block hardness と tool speed に応じた時間**がかかる。採掘中は
+  `World.destroyBlockInWorldPartially` で破壊アニメーションを出し、`EntityLivingBase.swingItem` で腕を振る。
+  到達範囲を外れたら途中経過をリセットして近づき直す。硬さ0以下は即時、負（bedrock等）は `tool_unavailable`。
 - `mine` の進捗は `mined`（破壊数）。receiptは `destroyed:{block,count}`。
   これは将来の `collect(log,N)` の取得progressへ直接加算しない。
 
