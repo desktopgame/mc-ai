@@ -197,10 +197,11 @@ public final class ObservationBridge {
                 value2.addProperty("distance", Math.floor(drop.getDistanceToEntity(companion) / 2) * 2);
                 items.add("item-" + drop.getUniqueID().toString(), value2);
             }
-            // Bounded mine-candidate observation: allowlisted blocks near the companion, never a voxel map.
+            // Bounded, type-fair mine-candidate observation: nearest few per block type, never a voxel map.
+            // Global nearest-N would let common ground (dirt) crowd out a nearby log or ore.
             final int cx = MathHelper.floor_double(companion.posX), cy = MathHelper.floor_double(companion.posY),
                     cz = MathHelper.floor_double(companion.posZ);
-            List<BlockCandidate> mineable = new ArrayList<BlockCandidate>();
+            Map<String, List<BlockCandidate>> byType = new HashMap<String, List<BlockCandidate>>();
             for (int dx = -16; dx <= 16; dx++) {
                 for (int dz = -16; dz <= 16; dz++) {
                     for (int dy = -8; dy <= 8; dy++) {
@@ -214,14 +215,22 @@ public final class ObservationBridge {
                         if (!SkillProtocol.BLOCKS.contains(key)) { continue; }
                         double distance = companion.getDistanceSq(x + 0.5D, y + 0.5D, z + 0.5D);
                         if (distance > CompanionEntity.ITEM_RANGE_SQUARED) { continue; }
-                        mineable.add(new BlockCandidate(x, y, z, distance, key));
+                        BlockCandidate candidate = new BlockCandidate(x, y, z, distance, key);
+                        List<BlockCandidate> list = byType.get(key);
+                        if (list == null) { list = new ArrayList<BlockCandidate>(); byType.put(key, list); }
+                        if (list.size() < 4) { list.add(candidate); continue; }
+                        int farthest = 0;
+                        for (int j = 1; j < list.size(); j++) { if (list.get(j).distance > list.get(farthest).distance) { farthest = j; } }
+                        if (candidate.distance < list.get(farthest).distance) { list.set(farthest, candidate); }
                     }
                 }
             }
+            List<BlockCandidate> mineable = new ArrayList<BlockCandidate>();
+            for (List<BlockCandidate> list : byType.values()) { mineable.addAll(list); }
             Collections.sort(mineable, new Comparator<BlockCandidate>() {
                 @Override public int compare(BlockCandidate a, BlockCandidate b) { return Double.compare(a.distance, b.distance); }
             });
-            for (int i = 0; i < Math.min(16, mineable.size()); i++) {
+            for (int i = 0; i < Math.min(32, mineable.size()); i++) {
                 BlockCandidate candidate = mineable.get(i); JsonObject value2 = new JsonObject();
                 value2.addProperty("type", candidate.name.replaceAll("[^A-Za-z0-9_.:-]", "_"));
                 value2.addProperty("distance", Math.floor(Math.sqrt(candidate.distance) / 2) * 2);

@@ -29,7 +29,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 | --- | --- |
 | `!agent do mine minecraft:log` | v2 `/v2/goal`（`type:mine`）→ 対象ブロックへ移動し、1ブロック破壊 |
 
-- 観測はCompanion周辺16ブロック（水平±16・垂直±8）の**allowlist blockのみ**、最大16候補。実座標はDaemonへ渡さず、`block-<x>_<y>_<z>` のopaque参照とregistry名・距離だけを送る。
+- 観測はCompanion周辺16ブロック（水平±16・垂直±8）の**allowlist blockのみ**、block typeごとに最近傍4件・合計最大32候補。実座標はDaemonへ渡さず、`block-<x>_<y>_<z>` のopaque参照とregistry名・距離だけを送る。
 - 道具選択はForgeが決定的に行う。素手で掘れるブロックは素手、必須ツールが無ければ `tool_unavailable`。自動クラフトはしない。
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。

@@ -21,14 +21,14 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
 | MODバージョン | `0.0.13`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism未配置 |
-| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`）。0.0.13は `build/libs` に生成済み |
-| Daemon | PID `40924` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（0.0.12相当、mine未反映）。`--shutdown-token` 付き |
+| Prismの有効MOD | `mc-ai-companion-0.0.13.jar`（SHA-256 `5D2EBC98BF61BFBE299E5456444CA2F94CD7D5B807C27834B1EEF3D2C743856B`）。0.0.12は `.disabled` |
+| Daemon | PID `29440` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（mine primitive反映）。`--shutdown-token` 付き |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
 | 自動テスト | Python **81件**・Java **43件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映待ち。** mine primitive（0.0.13）を `deploy-mod.ps1 -Version 0.0.13` で配置し、`restart-daemon.ps1` でDaemonを入れ替えてから実機確認する。
+**反映済み。** mine primitive（0.0.13）を実機で確認する。実機初回で `no_block_in_range` が出たため、block観測を「距離順16件」から「typeごと最近傍4・合計最大32」に修正した（近くのdirtがlog/oreを締め出す問題）。
 
 ## 実装済みの機能
 
@@ -50,7 +50,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
   control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
   lease/receipt追加反映: leaseは受理が確定したpollのみ更新（`stale_goal`/`conflicting_goal`/`stale_state`等の拒否では更新しない）。action receiptの `goalRevision` を該当Skillのrevisionと照合し、不一致は409。terminal後に届いた既知actionのreceiptはrecorded/ACKのみで `settled` に記録し、terminal resultとprogressは変えない（未知IDは409）。
 - **mine primitive（0.0.13 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
-  観測はCompanion周辺16ブロック（水平±16・垂直±8）のallowlist blockのみ・最大16候補。Daemonはopaqueな `block-<x>_<y>_<z>`、registry名、距離だけを扱う。
+  観測はCompanion周辺16ブロック（水平±16・垂直±8）のallowlist blockのみ。typeごとに最近傍4件・合計最大32候補（一律N件だと近いdirtがlog/oreを締め出すため）。Daemonはopaqueな `block-<x>_<y>_<z>`、registry名、距離だけを扱う。
   道具選択はForgeが決定的（`Material.isToolNotRequired()` なら素手、必須ツールが無ければ `tool_unavailable`）。進捗は `mined`、receiptは `destroyed:{block,count}` で `collect_drop` のprogressとは混ぜない。
   入口は `!agent do mine <ブロック>`。詳細は [protocol/mine-primitive.md](protocol/mine-primitive.md)。
 
@@ -164,7 +164,9 @@ OpenALFix導入後も音声処理のクラッシュ記録があり、完全解�
 .\scripts\restart-daemon.ps1                 # Daemon入れ替え（graceful shutdown→起動、二重起動を拒否）
 .\scripts\stop-daemon.ps1                    # Daemon停止のみ（loopback /local/shutdown、昇格不要）
 .\scripts\daemon-status.ps1                  # 待受PID・プロセス数・protocol行・token有無・ログ末尾（読取専用）
+.\scripts\daemon-state.ps1                   # 観測キャッシュの要約（items/blocks数とサンプル、読取専用）
 .\scripts\show-daemon-logs.ps1               # Daemonログのtail（読取専用）
+.\scripts\read-mc-source.ps1 -SourceEntry net/minecraft/world/World.java -Pattern setBlockToAir   # 逆コンパイル済みMCソースの閲覧（読取専用）
 ```
 
 `deploy-mod.ps1` は指定バージョン以外の `mc-ai-companion-*.jar` を `.disabled` にし、配置後のSHA-256を表示する。
@@ -204,12 +206,12 @@ Daemon再起動で会話履歴・キャッシュ・goalは消える。ワール�
 - 同 `ActionBridge`・`GoalState`・`ActionProtocol`: 実行権限、世代管理、制御と結果通知、操作ごとの安全条件。
 - 同 `IoExecutors`: 4系統の通信Executor。`CompanionHud`: 状態アイコン（クライアント専用、ClientProxy経由で登録）。
 - 同 `CompanionEntity`・`CompanionCommands`: 個体・経路探索・操作・9スロットのインベントリ（follow / pickup / deposit / pickup_target / mine の各タスク）。
-- 同 `ObservationBridge`・`ObservationDiff`: 観測・差分・ACK・再同期。`blocks` は周辺16ブロックのallowlist block候補（最大16）。
+- 同 `ObservationBridge`・`ObservationDiff`: 観測・差分・ACK・再同期。`blocks` は周辺16ブロックのallowlist block候補（typeごと最近傍4・合計最大32）。
 - 同 `SkillProtocol`・`SkillExecutionState`: v2のSkill view/action検証、claimとaction台帳。
 - `protocol/` と各tests: 通信仕様・fixture・回帰テスト。
 
 観測は毎秒、ACK済み位置から2ブロック以上の累積移動で座標送信。無変更でも約5～6秒ごとに空イベント。
-落下物は `item-<UUID>` で最大16件、採掘候補blockは `block-<x>_<y>_<z>` で最大16件、距離は2ブロック刻み。インベントリ差分は `entity`（owner/companion）で区別する。
+落下物は `item-<UUID>` で最大16件、採掘候補blockは `block-<x>_<y>_<z>` でtypeごと最大4・合計最大32件、距離は2ブロック刻み。インベントリ差分は `entity`（owner/companion）で区別する。
 キャッシュは32セッション・各100イベント。会話は32セッションで予算内の直近往復を保持。両方メモリのみ。
 
 ## 次の機能候補（未着手）
@@ -227,7 +229,7 @@ Phase 6の残りは `attack / place / craft / smelt`。`pickup` / `deposit` / `m
 - Daemonのログ: `.tools/daemon.stdout.log` / `.tools/daemon.stderr.log`、PID記録 `.tools/daemon.pid`（現在性は保証しない）。
   `intent-*` `lifecycle-*` `phase*-*` は過去セッションの記録。
 - ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`（MODの初期化・例外）と `latest.log`（チャット、CP932）。
-- 配置済み0.0.12のSHA-256: `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`。0.0.13は `build/libs` に生成済みで未配置。
+- 配置済み0.0.13のSHA-256: `5D2EBC98BF61BFBE299E5456444CA2F94CD7D5B807C27834B1EEF3D2C743856B`。
 - Claude向けの権限設定は `.claude/settings.json`（読み取り専用コマンド、上記3スクリプト、WebFetchの許可ドメイン）。
 
 古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。

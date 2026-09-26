@@ -96,7 +96,7 @@ def validate_state(value):
     if not isinstance(items, dict) or len(items) > 16:
         raise ValueError("invalid_items")
     blocks = value["blocks"]
-    if not isinstance(blocks, dict) or len(blocks) > 16:
+    if not isinstance(blocks, dict) or len(blocks) > 32:
         raise ValueError("invalid_blocks")
     return {"dimension": dimension,
             "owner": {"position": position(owner["position"]), "health": health(owner["health"]), "inventory": inventory(owner["inventory"])},

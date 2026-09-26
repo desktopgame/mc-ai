@@ -74,7 +74,7 @@ depositもtargetを持たず、所持品すべてを所有者へ渡す。品物�
 - `POST /v1/state`: `{"version":1}` で最後に更新されたセッション、`session` を付けると特定セッションを参照する。
 
 stateはdimension・owner・companion・hostiles・itemsのみ。ownerはposition・health・inventory、companionはid・position・health・task・result・inventory（未読込ならnull）。hostilesとitemsは一時IDからtype・distanceへの辞書。
-自由文・会話・所有者名・余分なフィールドは拒否する。inventoryはレジストリ名から個数への辞書で、NBTは含まない。hostilesとitemsは各最大16、inventoryは最大128種類。
+自由文・会話・所有者名・余分なフィールドは拒否する。inventoryはレジストリ名から個数への辞書で、NBTは含まない。hostilesとitemsは各最大16、blocksはtypeごと最大4・合計最大32、inventoryは最大128種類。
 itemsはCompanionから16ブロック以内の落下物で、IDは `item-<entityId>`、distanceは2ブロック刻み。Companion未読込のときは空。
 
 イベント:

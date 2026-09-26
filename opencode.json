@@ -43,6 +43,8 @@
       "Get-NetTCPConnection *": "allow",
       "Get-Content *": "allow",
       "Get-ChildItem *": "allow",
+      "Get-Item *": "allow",
+      "Resolve-Path *": "allow",
       "Test-Path *": "allow",
       "Select-String *": "allow",
 
@@ -61,10 +63,14 @@
       ".\\scripts\\run-python-tests.ps1*": "allow",
       "./scripts/daemon-status.ps1*": "allow",
       ".\\scripts\\daemon-status.ps1*": "allow",
+      "./scripts/daemon-state.ps1*": "allow",
+      ".\\scripts\\daemon-state.ps1*": "allow",
       "./scripts/stop-daemon.ps1*": "allow",
       ".\\scripts\\stop-daemon.ps1*": "allow",
       "./scripts/show-daemon-logs.ps1*": "allow",
       ".\\scripts\\show-daemon-logs.ps1*": "allow",
+      "./scripts/read-mc-source.ps1*": "allow",
+      ".\\scripts\\read-mc-source.ps1*": "allow",
 
       "git push*": "ask",
       "git pull*": "ask",

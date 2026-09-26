@@ -7,8 +7,9 @@
 
 - `mine_target` は **1 action = 1 block破壊**。反復・数量は将来のSkill側の責務。
 - block観測は周辺世界のvoxel mapではなく、**mine対象候補を選ぶための上限付き観測**。
-  Companion周辺16ブロック（水平±16・垂直±8）、最大16候補。既存 `items` と同じく registry名と
-  2ブロック刻みの距離だけを持つ。
+  Companion周辺16ブロック（水平±16・垂直±8）で、**block typeごとに最近傍4件・合計最大32候補**。
+  距離順の一律N件にすると近くの `dirt` が `log` やoreを締め出してしまうため、typeごとの公平な上限にする。
+  既存 `items` と同じく registry名と2ブロック刻みの距離だけを持つ。
 - Daemonが扱うのは **opaqueな `targetRef`（`block-<x>_<y>_<z>`）、block registry名、distance** のみ。
   実座標はForgeがtargetRefから解決し、Daemonへ別途露出しない。
 - 全block列挙・3D voxel map・chunk knowledge・全metadata/NBTは扱わない。
