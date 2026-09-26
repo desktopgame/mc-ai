@@ -14,7 +14,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>`、`!agent do mine <ブロック>`、`!agent do collect_block minecraft:log <個数>`、v2 typed protocol。Planner・自然文からのSkill引数抽出は範囲外。
-自動テストはPython 150件・Java 83件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知は自動テスト範囲（実ゲーム未確認）。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 150件・Java 83件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知の基本動作（terminal発話の一度表示、present→表示→displayed ACK→履歴登録）を実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -114,7 +114,7 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
 - **Phase 5追補**: terminal presentationは通常chatと**同じconversation identity `(conversationSession, player)`** の履歴を `budget.prepare` に渡して参照する（読むだけ。terminal自体は履歴へ追加しない。別conversationの履歴は混ざらない）。presentation生成競合は first-wins: `present_begin` の duplicate（generating中）はその場で fallback を ready 確定し、遅れて来たprovider結果は `present_finish` が上書きしない。ACK後も closed と整合（ACK済みvariantと矛盾するresponseを返さない、closedを再openしない）。追加テスト: 履歴参照/非更新/別会話分離、generating duplicateのfirst-winsとACK後整合。
 - **Phase 6（0.0.28）**: delivery ACKで履歴登録を接続。`/v2/social/terminal-delivery` の **displayed ACK時だけ**、`SocialBrain.register_terminal` が通常chatと同じ `(conversationSession, player)` 履歴へ `[内部イベント skill_terminal] <確定事実>` / assistant(実表示say) の1ペアを一度だけ追加（suppressed/重複ACKは追加なし、variant不一致・ACK後のlate providerは409/据置）。forgetは削除がbusyでも先にsessionをretired記録し、通知生成・ACK・遅着chat commitによる履歴再作成を拒否。Forgeは `PingBridge` のSOCIAL workerで `/v2/social/skill-terminal` を呼び、返却sayが**自分の候補集合に一致するときだけ採用**（不一致は固定fallback）。12秒未表示はfallback表示＋ACK。
 - **Phase 6追補（0.0.29）**: 表示とACKの順序を修正。SOCIAL workerは**presentation選択のみ**を行い、完了情報 `TerminalDone(epoch, identity, request, say, variantId)` をgame threadへ渡す。game threadで `TerminalAckPolicy.shouldDisplay(epoch, conversationEpoch, ownerPresent)` を判定し、**表示可能なら `reply(say)` → その後 displayed ACK**、reset/forget/owner・world変更後なら **suppressed ACK**（表示なし・history登録なし）。`reset()` が先にsuppressedを送っていても後段はepoch不一致でsuppressedに留まり、reset後displayed ACKを送ることはない。追加テスト: `TerminalAckPolicy` 判定、既存の displayed=1ペア/suppressed=0/duplicate増加なしを維持。
-- 未実装/未確認: Daemon epoch変更時の「旧作業」明示表示。実ゲーム未確認（present/ACK接続・履歴登録・retirementは自動テストのみ）。
+- 未実装/未確認: Daemon epoch変更時の「旧作業」明示表示は未実装。Skill終端Social通知の基本動作は実ゲーム確認済みだが、reset/forget/退出/world変更の競合や12秒fallback・provider失敗の実機確認は未実施（自動テストのみ）。
 
 
 

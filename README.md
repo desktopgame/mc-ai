@@ -56,7 +56,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.29.jar`。
-2026-09-26: Python **150件**・Java **83件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。world/session切替でterminal cursorをリセット。Phase 6で **実表示→displayed ACK→history登録** の順に登録（forget retirement付き）。
+2026-09-26: Python **150件**・Java **83件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集と、Skill終端Social通知（terminal発話の一度表示、present→表示→displayed ACK→履歴登録）を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。world/session切替でterminal cursorをリセット。Phase 6で **実表示→displayed ACK→history登録** の順に登録（forget retirement付き）。
 
 ## Skill終端 → Social発話 — Phase 1〜6 / protocol 2
 
@@ -69,7 +69,7 @@ Skillの `completed / failed / cancelled` を、確定済み terminal result を
 - **Phase 4（0.0.26）**: `ConversationQueue` を `USER_CHAT`/`SKILL_TERMINAL` のtyped entryへ拡張（chat 4件・2048字維持、terminal待機枠8件、単一FIFO）。`PingBridge` が両種を同一順序で処理し、terminalは会話contextを初期化して表示（typed commandだけでも通知可）。待機terminalは12秒でFIFO例外として先行chat中でも表示。forget/退出で未表示terminalは旧会話として表示または抑制。`TerminalPollCursor` をworld/session切替でリセットし、新sessionはeventSequence=1から取得。
 - **Phase 5（0.0.27）**: 既存providerで候補選択。`render_candidates` が friendly/calm/concise の**事実完全な3候補**（≤512、Python/Java同一）を生成し、`LocalSocialProvider.select_terminal` が候補IDのenumに限定した厳密schema＋8秒deadlineで1つ選ぶ。`/v2/social/skill-terminal` は台帳で二重呼び出しを防ぎ、provider未設定/busy/例外/予算超過は固定fallback（mode=fallback、同一say）。transport情報はLLMへ送らない。terminal presentationは通常chatと**同じconversation履歴を読むが書かない**（履歴登録はPhase 6のdisplayed ACK後）。presentation生成競合は**first-wins**（generating中のduplicateはfallbackを確定し、遅いprovider結果は上書きしない）。
 - **Phase 6（0.0.29）**: delivery ACKで履歴登録を接続。displayed ACK時だけ、通常chatと同じ `(conversationSession, player)` 履歴へ `[内部イベント skill_terminal]` ペアを一度だけ追加（suppressed/重複ACKは追加なし、variant不一致は409）。forgetは削除がbusyでもsessionをretiredにして履歴再作成を拒否。ForgeはSOCIAL workerで present と候補検証のみを行い、**game threadで表示可否を判定 → 表示 → displayed ACK**（reset/forget/owner・world変更後は表示せず suppressed ACK）。12秒未表示はfallback＋ACK。
-- 未確認: Daemon epoch変更時の旧作業表示、実ゲーム（present/ACK・履歴登録・retirement）。
+- 未確認: Daemon epoch変更時の旧作業表示は未実装。Skill終端Social通知の基本動作は実ゲーム確認済みだが、reset/forget/退出/world変更の競合・12秒fallback・provider失敗は自動テストのみ。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.29.jar`。
 
