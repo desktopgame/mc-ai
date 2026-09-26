@@ -2,6 +2,10 @@
 
 ## 最初に読むもの
 
+Skill Layerの次の実装仕様は [protocol/skill-layer.md](protocol/skill-layer.md)。利用者の依頼に基づき仕様化済み、コードは未実装。
+対象は `collect_drop(item, count)`。Planner・採掘は範囲外。既存pickupの対象固定・数量制限、Skill進捗とaction台帳、取消・通信障害の扱いを定義した。
+今回の仕様化ではプロセス・jar配置を操作していない。以下の起動状態は各記録時点の情報として扱う。
+
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
 
