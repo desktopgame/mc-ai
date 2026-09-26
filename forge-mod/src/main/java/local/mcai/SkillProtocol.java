@@ -23,6 +23,8 @@ public final class SkillProtocol {
             new ArrayList<String>(COLLECT_BLOCK_ITEMS.keySet()));
     public static final List<String> STATUS = Collections.unmodifiableList(Arrays.asList(
             "idle", "thinking", "running", "completed", "failed", "cancelled"));
+    public static final List<String> PHASES = Collections.unmodifiableList(Arrays.asList(
+            "selecting", "waiting_action", "cancelling", "terminal"));
 
     /** The item a collect_block goal collects, or null when the block is unsupported. */
     public static String collectItemFor(String block) { return COLLECT_BLOCK_ITEMS.get(block); }
@@ -114,6 +116,40 @@ public final class SkillProtocol {
         return new Action(value.getAsJsonObject());
     }
 
+    public static final class Progress {
+        public final int requested, acquired, mined;
+        public final boolean complete;
+        Progress(int requested, int acquired, int mined, boolean complete) {
+            this.requested = requested; this.acquired = acquired; this.mined = mined; this.complete = complete;
+        }
+        public boolean sameAs(Progress other) {
+            return other != null && requested == other.requested && acquired == other.acquired
+                    && mined == other.mined && complete == other.complete;
+        }
+    }
+
+    /** Strict parse of a Skill progress object, keyed by Skill type. Used for outer and result progress. */
+    private static Progress parseProgress(JsonObject progress, String type) {
+        Set<String> seen = new HashSet<String>();
+        for (Map.Entry<String, JsonElement> e : progress.entrySet()) { seen.add(e.getKey()); }
+        Set<String> expected;
+        if (type.equals("collect_drop")) { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "complete")); }
+        else if (type.equals("mine")) { expected = new HashSet<String>(Arrays.asList("requested", "mined", "complete")); }
+        else { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "mined", "complete")); }
+        if (!seen.equals(expected)) { throw new IllegalArgumentException("Unexpected progress fields"); }
+        int requested = integer(progress, "requested", 1, 64);
+        int acquired, mined;
+        if (type.equals("mine")) { mined = integer(progress, "mined", 0, 64); acquired = 0; }
+        else if (type.equals("collect_drop")) { acquired = integer(progress, "acquired", 0, 64); mined = 0; }
+        else { acquired = integer(progress, "acquired", 0, 64); mined = integer(progress, "mined", 0, 64); }
+        if (acquired > requested || mined > requested) { throw new IllegalArgumentException("Progress over requested"); }
+        JsonElement done = progress.get("complete");
+        if (done == null || !done.isJsonPrimitive() || !done.getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalArgumentException("Expected boolean");
+        }
+        return new Progress(requested, acquired, mined, done.getAsBoolean());
+    }
+
     public static final class Skill {
         public final String skillInstanceId, type, name, field, phase;
         public final int requested, achieved, acquired, mined;
@@ -136,33 +172,36 @@ public final class SkillProtocol {
             } else {
                 throw new IllegalArgumentException("Unknown skill");
             }
-            phase = string(o, "phase");
-            JsonObject progress = o.getAsJsonObject("progress");
-            Set<String> progressKeys = new HashSet<String>();
-            for (Map.Entry<String, JsonElement> e : progress.entrySet()) { progressKeys.add(e.getKey()); }
-            Set<String> expected;
-            if (type.equals("collect_drop")) { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "complete")); }
-            else if (type.equals("mine")) { expected = new HashSet<String>(Arrays.asList("requested", "mined", "complete")); }
-            else { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "mined", "complete")); }
-            if (!progressKeys.equals(expected)) { throw new IllegalArgumentException("Unexpected progress fields"); }
-            requested = integer(progress, "requested", 1, 64);
-            if (type.equals("mine")) { mined = integer(progress, "mined", 0, 64); acquired = 0; }
-            else if (type.equals("collect_drop")) { acquired = integer(progress, "acquired", 0, 64); mined = 0; }
-            else { acquired = integer(progress, "acquired", 0, 64); mined = integer(progress, "mined", 0, 64); }
-            if (acquired > requested || mined > requested) { throw new IllegalArgumentException("Progress over requested"); }
+            Progress outer = parseProgress(o.getAsJsonObject("progress"), type);
+            requested = outer.requested; acquired = outer.acquired; mined = outer.mined; complete = outer.complete;
             achieved = type.equals("mine") ? mined : acquired;
-            JsonElement done = progress.get("complete");
-            if (done == null || !done.isJsonPrimitive() || !done.getAsJsonPrimitive().isBoolean()) {
-                throw new IllegalArgumentException("Expected boolean");
-            }
-            complete = done.getAsBoolean();
+            phase = string(o, "phase");
+            if (!PHASES.contains(phase)) { throw new IllegalArgumentException("Unknown phase"); }
             JsonElement result = o.get("result");
-            if (result == null || result.isJsonNull()) { resultStatus = null; resultReason = null; }
-            else {
+            if (result == null || result.isJsonNull()) {
+                // A terminal view must carry its immutable result; a running view must not.
+                if (phase.equals("terminal")) { throw new IllegalArgumentException("Terminal phase without result"); }
+                resultStatus = null; resultReason = null;
+            } else {
+                if (!phase.equals("terminal")) { throw new IllegalArgumentException("Result on a non-terminal phase"); }
                 JsonObject r = result.getAsJsonObject();
                 keys(r, "skillInstanceId", "status", "reason", "progress");
+                if (!string(r, "skillInstanceId").equals(skillInstanceId)) {
+                    throw new IllegalArgumentException("Result skillInstanceId mismatch");
+                }
                 resultStatus = string(r, "status");
+                if (!resultStatus.equals("completed") && !resultStatus.equals("failed") && !resultStatus.equals("cancelled")) {
+                    throw new IllegalArgumentException("Unknown result status");
+                }
                 resultReason = string(r, "reason");
+                Progress terminal = parseProgress(r.getAsJsonObject("progress"), type);
+                if (!outer.sameAs(terminal)) { throw new IllegalArgumentException("Result progress mismatch"); }
+                if (resultStatus.equals("completed")) {
+                    if (!complete) { throw new IllegalArgumentException("Completed without complete=true"); }
+                    int success = type.equals("mine") ? mined : acquired;
+                    // collect_block completes on acquired only; mined is an independent side-effect count.
+                    if (success != requested) { throw new IllegalArgumentException("Completed before requested"); }
+                }
             }
         }
     }
@@ -171,6 +210,48 @@ public final class SkillProtocol {
         JsonElement value = view.get("skill");
         if (value == null || value.isJsonNull()) { return null; }
         return new Skill(value.getAsJsonObject());
+    }
+
+    /**
+     * Cross-check that a view's Skill and Action describe the same operation. Individual schema
+     * parsing is not enough: a mismatched pair would otherwise mutate the world before the Daemon
+     * rejects the receipt. Pure so it is unit-testable.
+     */
+    public static void validateBinding(Skill skill, Action action) {
+        if (skill == null || action == null) { throw new IllegalArgumentException("Binding needs skill and action"); }
+        if (!action.skillInstanceId.equals(skill.skillInstanceId)) {
+            throw new IllegalArgumentException("Skill/action instance mismatch");
+        }
+        if (skill.type.equals("collect_drop")) {
+            if (!action.type.equals("pickup_target") || !skill.name.equals(action.item)) {
+                throw new IllegalArgumentException("collect_drop binding mismatch");
+            }
+        } else if (skill.type.equals("mine")) {
+            if (!action.type.equals("mine_target") || !skill.name.equals(action.block)) {
+                throw new IllegalArgumentException("mine binding mismatch");
+            }
+        } else if (skill.type.equals("collect_block")) {
+            if (action.type.equals("mine_target")) {
+                if (!skill.name.equals(action.block)) { throw new IllegalArgumentException("collect_block mine binding mismatch"); }
+            } else if (action.type.equals("pickup_target")) {
+                String expected = collectItemFor(skill.name);
+                if (expected == null || !expected.equals(action.item)) {
+                    throw new IllegalArgumentException("collect_block pickup binding mismatch");
+                }
+            } else {
+                throw new IllegalArgumentException("collect_block action mismatch");
+            }
+        } else {
+            throw new IllegalArgumentException("Unknown skill type");
+        }
+    }
+
+    /** Cross-check the parsed view against the goal this Forge actually started. */
+    public static void validateGoalBinding(Skill skill, String type, String target, int requested) {
+        if (skill == null) { throw new IllegalArgumentException("Missing skill"); }
+        if (!skill.type.equals(type) || !skill.name.equals(target) || skill.requested != requested) {
+            throw new IllegalArgumentException("Goal binding mismatch");
+        }
     }
 
     /** Parses the open response capability list. Missing/unexpected entries are ignored defensively. */

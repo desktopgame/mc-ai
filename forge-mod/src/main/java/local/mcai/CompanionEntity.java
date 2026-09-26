@@ -244,7 +244,15 @@ public final class CompanionEntity extends EntityCreature {
 
     /** Collects up to pickupMaxCount from the fixed target; the outcome survives stop(). */
     private void collectTarget(EntityItem item) {
-        ItemStack remaining = item.getEntityItem().copy();
+        // Final registry-name check immediately before storing: the uuid matched earlier, but the
+        // stack may have been replaced. A mismatch is target_lost and no world mutation happens.
+        ItemStack live = item.getEntityItem();
+        Object liveName = live == null ? null : Item.itemRegistry.getNameForObject(live.getItem());
+        if (live == null || live.stackSize <= 0
+                || (!pickupItemName.isEmpty() && (liveName == null || !liveName.toString().equals(pickupItemName)))) {
+            stop(); pickupStored = 0; pickupOutcome = "target_lost"; result("no_item_in_range"); return;
+        }
+        ItemStack remaining = live.copy();
         int stored = storeUpTo(remaining, Math.min(pickupMaxCount, remaining.stackSize));
         stop();
         pickupStored = stored;

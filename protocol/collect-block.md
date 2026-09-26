@@ -1,6 +1,6 @@
 # collect_block MVP — 実装指示書
 
-状態: **Daemon・Forge とも実装済み（MOD 0.0.21）。実ゲームで基本動作を確認済み。** 調査基点 `c5d491c`、MOD 0.0.20 → 0.0.21。
+状態: **Daemon・Forge とも実装済み（MOD 0.0.22）。実ゲームで基本動作を確認済み。** 調査基点 `c5d491c`、MOD 0.0.20 → 0.0.21 → 0.0.22（Forge hardening）。
 既存の [Skill Layer](skill-layer.md) と [mine primitive](mine-primitive.md) を利用する。
 
 ### 実装状況（2026-09-26 更新）
@@ -16,8 +16,9 @@
   3カウンタunion）、§6 のcurrent action種類をdescriptor単位で分離（mine/pickup混在）、§10 の受付（`!agent do collect_block`）・
   `SkillProtocol.java` の `COLLECT_BLOCK_ITEMS`、§11 の表示（acquired/mined/complete、未確定表示）。実収納直前のitem同一性
   確認を `CompanionEntity.pickupItem` に追加。Javaテストは `SkillProtocolTest` に collect_block 解析・対応表・capability・
-  混合sequenceを追加（Java 70件）。
+  混合sequenceを追加（Java 74件）。
 - **確認済み（実ゲーム）**: `!agent do collect_block minecraft:log 5` で原木を採掘・回収して完了。既存 collect_drop / mine / follow 等に退行なし。
+- **Forge hardening（0.0.22）**: claim前に `SkillProtocol.validateBinding`（skillInstanceId/type/target対応）と `validateGoalBinding`（開始goal照合）で不一致を拒否し、world mutationしない。terminal resultは `result.progress == outer progress`・status限定・completed不変条件（acquired==requested、mineはmined==requested）・`phase==terminal ⇔ result!=null` を厳密検証。`collectTarget` 冒頭で実収納前にregistry名を再確認し不一致は `target_lost`。
 - **未消化**: §13 のForge/統合の実配送テスト（ActionBridgeはMinecraft依存のため未）、および §13 異常系の実機確認（収納満杯・回収途中停止・経路失敗・pause/退出）。
 
 ## 1. 目的・MVPの範囲

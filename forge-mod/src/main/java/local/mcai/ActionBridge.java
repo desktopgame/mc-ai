@@ -454,10 +454,14 @@ public final class ActionBridge {
             // A verified control response renews the lease for the action that is running.
             if (active != null) { active.setControlDeadline(now + CONTROL_LEASE_NANOS); }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
-            if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
-            if (skill != null && skill.resultStatus != null) { finishSkill(skill); return; }
+            // The view must describe the goal this Forge actually started, and its Skill/Action must
+            // agree, before any lease renewal, claim or world mutation can happen.
+            SkillProtocol.validateGoalBinding(skill, state.goal, skillItem, skillCount);
+            skillState.skillInstanceId = skill.skillInstanceId;
+            if (skill.resultStatus != null) { finishSkill(skill); return; }
             SkillProtocol.Action action = SkillProtocol.action(response);
             if (action == null) { return; }
+            SkillProtocol.validateBinding(skill, action);
             lastIssuedActionId = action.actionId; lastIssuedSequence = action.sequence;
             lastIssuedField = action.field(); lastIssuedName = action.name(); lastIssuedMaxCount = action.maxCount;
             if (claimedActionId != null || skillState.known(action.actionId)) { return; }

@@ -40,6 +40,9 @@ public class SkillProtocolTest {
         o.add("action", JsonNull.INSTANCE);
         JsonObject skill = o.getAsJsonObject("skill");
         skill.addProperty("phase", "terminal");
+        // The outer progress and the terminal result progress must agree exactly.
+        skill.getAsJsonObject("progress").addProperty("acquired", 5);
+        skill.getAsJsonObject("progress").addProperty("complete", true);
         skill.add("result", new JsonParser().parse("{\"skillInstanceId\":\"skill-1\",\"status\":\"completed\","
                 + "\"reason\":\"completed\",\"progress\":{\"requested\":5,\"acquired\":5,\"complete\":true}}"));
         SkillProtocol.validateView(o, "world", 3, "boot");
@@ -164,6 +167,129 @@ public class SkillProtocolTest {
         assertFalse(state.claim("A3", 3));   // nor a settled one
         assertTrue(state.known("A1"));
         assertTrue(state.known("A3"));
+    }
+
+    // ---- skill/action binding --------------------------------------------
+    private SkillProtocol.Skill skillOf(String json) { return new SkillProtocol.Skill(new JsonParser().parse(json).getAsJsonObject()); }
+    private SkillProtocol.Action actionOf(String json) { return new SkillProtocol.Action(new JsonParser().parse(json).getAsJsonObject()); }
+
+    private String skillJson(String id, String type, String target, int requested, String counter, int value) {
+        String progress = type.equals("collect_block")
+                ? "{\"requested\":" + requested + ",\"acquired\":" + (counter.equals("acquired") ? value : 0)
+                    + ",\"mined\":" + (counter.equals("mined") ? value : 0) + ",\"complete\":false}"
+                : "{\"requested\":" + requested + ",\"" + counter + "\":" + value + ",\"complete\":false}";
+        return "{\"skillInstanceId\":\"" + id + "\",\"type\":\"" + type + "\",\"target\":{\""
+                + (type.equals("collect_drop") ? "item" : "block") + "\":\"" + target + "\"},"
+                + "\"phase\":\"waiting_action\",\"progress\":" + progress + ",\"result\":null}";
+    }
+    private String pickupJson(String id, String item) {
+        return "{\"type\":\"pickup_target\",\"actionId\":\"x\",\"actionSequence\":1,\"skillInstanceId\":\"" + id
+                + "\",\"companionId\":\"c\",\"dimension\":0,\"targetRef\":\"item-uuid\",\"item\":\"" + item
+                + "\",\"maxCount\":2,\"timeoutMs\":30000,\"observationSequence\":3}";
+    }
+    private String mineJson(String id, String block) {
+        return "{\"type\":\"mine_target\",\"actionId\":\"y\",\"actionSequence\":2,\"skillInstanceId\":\"" + id
+                + "\",\"companionId\":\"c\",\"dimension\":0,\"targetRef\":\"block-0_64_0\",\"block\":\"" + block
+                + "\",\"timeoutMs\":30000,\"observationSequence\":3}";
+    }
+    private void rejectBinding(SkillProtocol.Skill skill, SkillProtocol.Action action) {
+        try { SkillProtocol.validateBinding(skill, action); fail("accepted binding"); }
+        catch (IllegalArgumentException expected) { }
+    }
+
+    @Test public void bindingRejectsMismatchedSkillAndAction() {
+        SkillProtocol.Skill cb = skillOf(skillJson("A", "collect_block", "minecraft:log", 5, "mined", 0));
+        SkillProtocol.validateBinding(cb, actionOf(pickupJson("A", "minecraft:log")));
+        SkillProtocol.validateBinding(cb, actionOf(mineJson("A", "minecraft:log")));
+        rejectBinding(cb, actionOf(pickupJson("A", "minecraft:cobblestone")));
+        rejectBinding(cb, actionOf(mineJson("A", "minecraft:cobblestone")));
+        rejectBinding(cb, actionOf(pickupJson("B", "minecraft:log")));
+
+        SkillProtocol.Skill drop = skillOf(skillJson("D", "collect_drop", "minecraft:log", 2, "acquired", 0));
+        rejectBinding(drop, actionOf(mineJson("D", "minecraft:log")));
+        SkillProtocol.validateBinding(drop, actionOf(pickupJson("D", "minecraft:log")));
+
+        SkillProtocol.Skill mine = skillOf(skillJson("M", "mine", "minecraft:log", 1, "mined", 0));
+        rejectBinding(mine, actionOf(pickupJson("M", "minecraft:log")));
+        SkillProtocol.validateBinding(mine, actionOf(mineJson("M", "minecraft:log")));
+        rejectBinding(mine, actionOf(mineJson("M", "minecraft:cobblestone")));
+
+        // An unsupported action type is rejected by the Action parser itself.
+        try {
+            actionOf("{\"type\":\"mine_forever\",\"actionId\":\"x\",\"actionSequence\":1,\"skillInstanceId\":\"A\","
+                    + "\"companionId\":\"c\",\"dimension\":0,\"targetRef\":\"r\",\"block\":\"minecraft:log\","
+                    + "\"timeoutMs\":30000,\"observationSequence\":3}");
+            fail("accepted unknown action type");
+        } catch (IllegalArgumentException expected) { }
+    }
+
+    @Test public void goalBindingMatchesTheStartedGoal() {
+        SkillProtocol.Skill cb = skillOf(skillJson("A", "collect_block", "minecraft:log", 5, "mined", 0));
+        SkillProtocol.validateGoalBinding(cb, "collect_block", "minecraft:log", 5);
+        for (Object[] bad : new Object[][] {{"mine", "minecraft:log", 5}, {"collect_block", "minecraft:cobblestone", 5},
+                {"collect_block", "minecraft:log", 4}}) {
+            try { SkillProtocol.validateGoalBinding(cb, (String) bad[0], (String) bad[1], (Integer) bad[2]); fail("accepted"); }
+            catch (IllegalArgumentException expected) { }
+        }
+        try { SkillProtocol.validateGoalBinding(null, "collect_block", "minecraft:log", 5); fail("accepted null"); }
+        catch (IllegalArgumentException expected) { }
+    }
+
+    // ---- terminal result strictness --------------------------------------
+    private JsonObject terminal(String type, String targetJson, String outer, String status, String resultProgress, String resultId) {
+        String s = "{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\",\"goalRevision\":1,"
+                + "\"status\":\"" + status + "\",\"error\":null,"
+                + "\"skill\":{\"skillInstanceId\":\"A\",\"type\":\"" + type + "\",\"target\":" + targetJson + ","
+                + "\"phase\":\"terminal\",\"progress\":" + outer + ","
+                + "\"result\":{\"skillInstanceId\":\"" + resultId + "\",\"status\":\"" + status + "\",\"reason\":\"r\",\"progress\":" + resultProgress + "}},"
+                + "\"action\":null}";
+        return new JsonParser().parse(s).getAsJsonObject();
+    }
+    private SkillProtocol.Skill parseSkill(JsonObject view) { SkillProtocol.validateView(view, "world", 1, "boot"); return SkillProtocol.skill(view); }
+    private void rejectSkill(JsonObject view) {
+        try { parseSkill(view); fail("accepted invalid terminal view"); }
+        catch (IllegalArgumentException expected) { }
+    }
+
+    @Test public void terminalResultMustMatchOuterProgressAndInvariants() {
+        String cbTarget = "{\"block\":\"minecraft:log\"}";
+        String cbGood = "{\"requested\":5,\"acquired\":5,\"mined\":2,\"complete\":true}";
+        parseSkill(terminal("collect_block", cbTarget, cbGood, "completed", cbGood, "A"));
+        rejectSkill(terminal("collect_block", cbTarget, cbGood, "completed", cbGood, "B"));       // result id mismatch
+        rejectSkill(terminal("collect_block", cbTarget, cbGood, "unknown", cbGood, "A"));         // unknown status
+        rejectSkill(terminal("collect_block", cbTarget, cbGood, "completed",
+                "{\"requested\":5,\"acquired\":5,\"complete\":true}", "A"));                       // missing mined
+        rejectSkill(terminal("collect_block", cbTarget, cbGood, "completed",
+                "{\"requested\":5,\"acquired\":4,\"mined\":2,\"complete\":true}", "A"));           // outer/result mismatch
+        String cbShort = "{\"requested\":5,\"acquired\":3,\"mined\":2,\"complete\":true}";
+        rejectSkill(terminal("collect_block", cbTarget, cbShort, "completed", cbShort, "A"));     // completed < requested
+        String cbIncomplete = "{\"requested\":5,\"acquired\":5,\"mined\":2,\"complete\":false}";
+        rejectSkill(terminal("collect_block", cbTarget, cbIncomplete, "completed", cbIncomplete, "A"));
+        String cbPartial = "{\"requested\":5,\"acquired\":2,\"mined\":3,\"complete\":true}";
+        parseSkill(terminal("collect_block", cbTarget, cbPartial, "failed", cbPartial, "A"));     // partial failure allowed
+        parseSkill(terminal("collect_block", cbTarget, cbPartial, "cancelled", cbPartial, "A"));
+
+        String mineTarget = "{\"block\":\"minecraft:log\"}";
+        rejectSkill(terminal("mine", mineTarget, "{\"requested\":1,\"mined\":0,\"complete\":true}",
+                "completed", "{\"requested\":1,\"mined\":0,\"complete\":true}", "A"));
+        parseSkill(terminal("mine", mineTarget, "{\"requested\":1,\"mined\":1,\"complete\":true}",
+                "completed", "{\"requested\":1,\"mined\":1,\"complete\":true}", "A"));
+
+        rejectSkill(terminal("collect_drop", "{\"item\":\"minecraft:log\"}",
+                "{\"requested\":2,\"acquired\":1,\"complete\":true}", "completed",
+                "{\"requested\":2,\"acquired\":1,\"complete\":true}", "A"));
+    }
+
+    @Test public void phaseAndResultMustAgree() {
+        JsonObject terminalWithoutResult = view();
+        terminalWithoutResult.getAsJsonObject("skill").addProperty("phase", "terminal");
+        rejectSkill(terminalWithoutResult);   // phase terminal, result null
+
+        JsonObject runningWithResult = view();
+        runningWithResult.getAsJsonObject("skill").add("result", new JsonParser().parse(
+                "{\"skillInstanceId\":\"skill-1\",\"status\":\"failed\",\"reason\":\"r\","
+                + "\"progress\":{\"requested\":5,\"acquired\":2,\"complete\":false}}"));
+        rejectSkill(runningWithResult);       // result on a non-terminal phase
     }
 
     @Test public void executionStatePreventsReexecutionAndBoundsTheLedger() {
