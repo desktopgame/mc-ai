@@ -632,11 +632,13 @@ public final class ActionBridge {
      */
     private void terminalTick() {
         if (!terminalCapable || owner == null || state.session == null || terminalEpoch == null) { return; }
-        // Existing Skill control has priority on the shared CONTROL lane: never start a terminal
-        // poll while a Skill is active or a skill control request is in flight. Terminal events are
-        // durable, so they are fetched on a later tick instead.
-        if (!SkillRequestFence.terminalPollAllowed(skillActive, openCall, goalCall, cancelCall)) { return; }
         long now = System.nanoTime();
+        // Existing Skill control has priority on the shared CONTROL lane, but only when it actually
+        // contends: a request is in flight/queued, or this tick is about to enqueue one. An active
+        // Skill alone does not block terminal polling, so an old Skill's terminal is not starved.
+        boolean skillControlImminent = skillActive && now >= nextPoll
+                && ((skillEpoch == null && openCall == null) || (skillEpoch != null && goalCall == null));
+        if (!SkillRequestFence.terminalPollAllowed(openCall, goalCall, cancelCall, skillControlImminent)) { return; }
         TerminalReply reply = terminalReply;
         if (reply != null) {
             terminalReply = null; terminalInFlight = false;

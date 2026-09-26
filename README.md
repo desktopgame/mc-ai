@@ -56,7 +56,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。
-2026-09-26: Python **136件**・Java **79件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界・fingerprintでclosed衝突検出・deep copy・CONTROL laneでSkill制御優先。
+2026-09-26: Python **137件**・Java **79件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。
 
 ## Skill終端 → Social発話 — Phase 1〜3 / protocol 2
 

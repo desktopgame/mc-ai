@@ -84,14 +84,14 @@ public class SkillHardeningTest {
         assertFalse(SkillRequestFence.validOpenAck(open, null));
     }
 
-    @Test public void terminalPollYieldsToSkillControl() {
+    @Test public void terminalPollYieldsOnlyToActualSkillControl() {
         SkillRequestFence fence = new SkillRequestFence();
-        assertTrue(SkillRequestFence.terminalPollAllowed(false, null, null, null));
-        assertFalse(SkillRequestFence.terminalPollAllowed(true, null, null, null));
+        assertTrue(SkillRequestFence.terminalPollAllowed(null, null, null, false));   // idle: allowed
+        assertFalse(SkillRequestFence.terminalPollAllowed(null, null, null, true));   // control imminent
         SkillRequestFence.Request r = fence.goal("world", 1, "boot", 0L);
-        assertFalse(SkillRequestFence.terminalPollAllowed(false, r, null, null));
-        assertFalse(SkillRequestFence.terminalPollAllowed(false, null, r, null));
-        assertFalse(SkillRequestFence.terminalPollAllowed(false, null, null, r));
+        assertFalse(SkillRequestFence.terminalPollAllowed(r, null, null, false));     // open in flight
+        assertFalse(SkillRequestFence.terminalPollAllowed(null, r, null, false));     // goal in flight
+        assertFalse(SkillRequestFence.terminalPollAllowed(null, null, r, false));     // cancel in flight
     }
 
     @Test public void cancelAckNeedsMatchingIdentityAndIdle() {

@@ -71,11 +71,13 @@ public final class SkillRequestFence {
     }
 
     /**
-     * Terminal polling shares the CONTROL lane with Skill control, which has priority: a terminal
-     * poll is only allowed when no Skill is active and no skill request is in flight or queued.
+     * Terminal polling shares the CONTROL lane with Skill control, which has priority. A terminal
+     * poll is blocked only by an actual conflict: a skill request already in flight/queued, or a
+     * skill control request that this very tick is about to enqueue. An active Skill alone must not
+     * starve terminal polling.
      */
-    public static boolean terminalPollAllowed(boolean skillActive, Request open, Request goal, Request cancel) {
-        return !skillActive && open == null && goal == null && cancel == null;
+    public static boolean terminalPollAllowed(Request open, Request goal, Request cancel, boolean skillControlImminent) {
+        return open == null && goal == null && cancel == null && !skillControlImminent;
     }
 
     /** A valid open ACK is a v2 envelope for the same session; it is what establishes the epoch. */

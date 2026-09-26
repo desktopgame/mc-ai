@@ -9,6 +9,7 @@ identity keeps only the minimal fields needed for idempotent ACK and duplicate/c
 (state, binding, ack, immutable payload fingerprint); the heavy presentation text is released.
 """
 import copy
+import hashlib
 import json
 import threading
 import time
@@ -16,6 +17,7 @@ from collections import OrderedDict
 
 MAX_EVENTS = 100
 MAX_CLOSED = 100
+MAX_CLOSED_DIGESTS = 1024
 MAX_PRESENTATIONS = 100
 EVENT_TTL = 600.0
 MAX_PAGE = 8
@@ -40,6 +42,11 @@ def _fingerprint(payload):
                       sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+def _identity_digest(identity):
+    """Compact, stable key for the closed-identity ledger, so exact records can be evicted early."""
+    return hashlib.blake2b(repr(identity).encode("utf-8"), digest_size=8).hexdigest()
+
+
 class TerminalEventStore:
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -48,6 +55,7 @@ class TerminalEventStore:
         self.by_session = {}                # (epoch, session) -> OrderedDict(identity -> event)
         self.presentations = OrderedDict()  # identity -> {binding, state, say, variantId, mode, ack, fingerprint}
         self.closed = OrderedDict()         # identity -> {state, binding, ack, fingerprint} (bounded)
+        self.closed_digest = OrderedDict()  # identity digest -> fingerprint (bounded, outlives exact records)
         self.overflow = set()               # (epoch, session) sticky overflow
         self.recorded_at = {}               # identity -> clock
 
@@ -75,6 +83,13 @@ class TerminalEventStore:
             if closed is not None:
                 if closed["fingerprint"] == fingerprint:
                     return None   # already delivered/suppressed/expired: never resurrect
+                raise TerminalError("terminal_identity_conflict")
+            known = self.closed_digest.get(_identity_digest(identity))
+            if known is not None:
+                # The exact closed record may have been evicted, but the compact digest ledger still
+                # remembers the identity: never regenerate it, and reject a changed payload.
+                if known == fingerprint:
+                    return None
                 raise TerminalError("terminal_identity_conflict")
             sequence = self.sequences.get((epoch, session), 0) + 1
             self.sequences[(epoch, session)] = sequence
@@ -185,6 +200,12 @@ class TerminalEventStore:
         self.closed.move_to_end(identity)
         while len(self.closed) > MAX_CLOSED:
             self.closed.popitem(last=False)
+        # A compact digest ledger outlives the exact closed record, so a plain LRU eviction of the
+        # heavy record never turns an already-closed identity back into an "unseen" one.
+        self.closed_digest[_identity_digest(identity)] = record["fingerprint"]
+        self.closed_digest.move_to_end(_identity_digest(identity))
+        while len(self.closed_digest) > MAX_CLOSED_DIGESTS:
+            self.closed_digest.popitem(last=False)
 
     def _bound_presentations(self):
         while len(self.presentations) > MAX_PRESENTATIONS:

@@ -164,6 +164,25 @@ class StoreTests(unittest.TestCase):
         self.assertNotIn(("boot", "world", "sf", "tf"), store.presentations)
         self.assertNotIn("say", store.closed[("boot", "world", "sf", "tf")])
 
+    def test_closed_identity_survives_exact_ledger_eviction(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        a = {k: event(skill_id="sA", terminal_id="tA")[k] for k in event() if k != "eventSequence"}
+        store.record(a)
+        store.present("boot", "world", "sA", "tA", "conv", "Steve", "dA")
+        store.deliver("boot", "world", "sA", "tA", "conv", "Steve", "dA", "displayed", "fallback")
+        identity = ("boot", "world", "sA", "tA")
+        for i in range(150):   # close more terminals than the exact closed ledger can hold
+            snap = {k: event(skill_id="s-%d" % i, terminal_id="t-%d" % i)[k] for k in event()}
+            snap.pop("eventSequence", None)
+            store.record(snap)
+            store.present("boot", "world", "s-%d" % i, "t-%d" % i, "conv", "Steve", "d-%d" % i)
+            store.deliver("boot", "world", "s-%d" % i, "t-%d" % i, "conv", "Steve", "d-%d" % i, "displayed", "fallback")
+        self.assertNotIn(identity, store.closed)          # the exact record was evicted...
+        self.assertIsNone(store.record(a))                 # ...but the identity is never regenerated
+        self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])
+        with self.assertRaises(TerminalError):             # a changed payload is still a conflict
+            store.record(dict(a, status="cancelled"))
+
     def test_ack_closes_the_outbox_entry_and_never_regenerates_it(self):
         for outcome, variant in (("displayed", "fallback"), ("suppressed", None)):
             store = TerminalEventStore(clock=lambda: 0.0)
