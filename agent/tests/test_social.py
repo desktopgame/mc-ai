@@ -67,7 +67,9 @@ class SocialTests(unittest.TestCase):
         brain = SocialBrain(provider)
         for i in range(10):
             turn(chat_payload(str(i)), brain)
-        self.assertEqual(len(brain.histories[("world-one", "owner")]), 12)
+        retained = brain.histories[("world-one", "owner")]
+        self.assertGreater(len(retained), 12)  # no fixed six-turn truncation
+        self.assertLessEqual(brain.budget.count(retained), brain.budget.history_budget_tokens)
         for i in range(40):
             turn(chat_payload(session=str(i)), brain)
         self.assertEqual(len(brain.histories), 32)
@@ -115,12 +117,13 @@ class ProviderHTTPTests(unittest.TestCase):
         try:
             with patch.dict(os.environ, {"MCAI_SOCIAL_API_KEY": "TEST_SECRET"}):
                 provider = LocalSocialProvider({"base_url": "http://127.0.0.1:%d/v1" % server.server_port,
-                                               "model": "test", "timeout_seconds": 1})
+                                               "model": "test", "timeout_seconds": 1, "max_output_tokens": 128})
             with self.assertLogs("mcai.social", level="INFO") as logs:
                 self.assertEqual(provider.reply([{"role": "user", "content": "PRIVATE_INPUT"}]), "こんにちは。")
             self.assertEqual(state["auth"], "Bearer TEST_SECRET")
             self.assertEqual(state["path"], "/v1/chat/completions")
             self.assertEqual(state["request"]["reasoning_effort"], "none")
+            self.assertEqual(state["request"]["max_tokens"], 128)
             self.assertNotIn("TEST_SECRET", str(logs.output))
             self.assertNotIn("PRIVATE_INPUT", str(logs.output))
             for mode in ["bad", "length", "slow"]:

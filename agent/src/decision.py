@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Protocol
 from urllib import request, error, parse
+from context_budget import ContextBudget
 
 LOG = logging.getLogger("mcai.decision")
 GOALS = {"follow_owner": "follow", "stop": "stop", "look_at_owner": "look"}
@@ -134,7 +135,8 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 class LocalDecisionProvider:
     """JSON-schema-capable local OpenAI-compatible endpoint; no history and no SocialProvider reuse."""
-    def __init__(self, config):
+    def __init__(self, config, *, token_counter=None):
+        self.budget = ContextBudget(config, counter=token_counter)
         self.base_url = config.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
         url = parse.urlsplit(self.base_url)
         if url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1", "::1") or url.username or url.password or url.query or url.fragment:
@@ -151,12 +153,14 @@ class LocalDecisionProvider:
         self.opener = request.build_opener(request.ProxyHandler({}), NoRedirect())
 
     def decide(self, payload):
+        messages = [{"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": json.dumps(payload, allow_nan=False)}]
+        response_format = {"type": "json_schema", "json_schema": {
+            "name": "tactical_decision", "strict": True, "schema": DECISION_SCHEMA}}
+        self.budget.require(messages, response_format)
         body = json.dumps({"model": self.model, "stream": False, "temperature": 0,
-                           "max_tokens": 256, "reasoning_effort": "none",
-                           "messages": [{"role": "system", "content": SYSTEM},
-                                        {"role": "user", "content": json.dumps(payload, allow_nan=False)}],
-                           "response_format": {"type": "json_schema", "json_schema": {
-                               "name": "tactical_decision", "strict": True, "schema": DECISION_SCHEMA}}},
+                           "max_tokens": self.budget.max_output_tokens, "reasoning_effort": "none",
+                           "messages": messages, "response_format": response_format},
                           allow_nan=False).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.api_key:

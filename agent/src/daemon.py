@@ -7,6 +7,7 @@ from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSON
 from decision import DecisionService, MockDecisionProvider, LocalDecisionProvider, DecisionError
 from state_cache import StateCache, SyncError
 from goals import GoalManager
+from context_budget import BudgetExceeded
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
@@ -127,6 +128,10 @@ class Handler(BaseHTTPRequestHandler):
                 response = service.decide(payload)
             else:
                 response = turn(payload, getattr(self.server, "brain", None))
+        except BudgetExceeded as exc:
+            LOG.warning("context budget rejected code=%s", str(exc))
+            self.error(422, str(exc))
+            return
         except SyncError as exc:
             self.error(409, str(exc))
             return

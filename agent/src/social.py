@@ -10,6 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Protocol
 from urllib import request, error, parse
+from context_budget import ContextBudget
 
 LOG = logging.getLogger("mcai.social")
 DEFAULT_PERSONA = (
@@ -32,6 +33,8 @@ INTENT_INSTRUCTIONS = (
 SOCIAL_SCHEMA = {"type": "object", "additionalProperties": False,
                  "properties": {"reply": {"type": "string"}, "intent": {"type": "string", "enum": list(INTENTS)}},
                  "required": ["reply", "intent"]}
+SOCIAL_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
+    "name": "social_turn", "strict": True, "schema": SOCIAL_SCHEMA}}
 
 
 def allows_intent(text):
@@ -83,7 +86,8 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 
 class LocalSocialProvider:
-    def __init__(self, config):
+    def __init__(self, config, *, token_counter=None):
+        self.budget = ContextBudget(config, social=True, counter=token_counter)
         self.base_url = config.get("base_url", "http://127.0.0.1:1234/v1").rstrip("/")
         url = parse.urlsplit(self.base_url)
         if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost", "::1") or url.username or url.password or url.query or url.fragment:
@@ -94,7 +98,7 @@ class LocalSocialProvider:
         self.timeout = float(config.get("timeout_seconds", 30))
         if not 1 <= self.timeout <= 45:
             raise ValueError("timeout_seconds must be between 1 and 45")
-        self.max_tokens = int(config.get("max_tokens", 256))
+        self.max_tokens = self.budget.max_output_tokens
         self.reasoning_effort = config.get("reasoning_effort", "none")
         if self.reasoning_effort not in (None, "none", "low", "medium", "high"):
             raise ValueError("invalid reasoning_effort")
@@ -112,11 +116,12 @@ class LocalSocialProvider:
         return self._reply(messages, True)
 
     def _reply(self, messages, with_intent):
+        response_format = SOCIAL_RESPONSE_FORMAT if with_intent else None
+        self.budget.require(messages, response_format)
         payload = {"model": self.model, "messages": messages, "stream": False,
                    "temperature": 0 if with_intent else 0.7, "max_tokens": self.max_tokens}
         if with_intent:
-            payload["response_format"] = {"type": "json_schema", "json_schema": {
-                "name": "social_turn", "strict": True, "schema": SOCIAL_SCHEMA}}
+            payload["response_format"] = response_format
         if self.reasoning_effort is not None:
             payload["reasoning_effort"] = self.reasoning_effort
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -152,10 +157,11 @@ class LocalSocialProvider:
 
 
 class SocialBrain:
-    def __init__(self, provider: SocialProvider, persona=DEFAULT_PERSONA):
+    def __init__(self, provider: SocialProvider, persona=DEFAULT_PERSONA, *, budget=None):
         if not isinstance(persona, str) or not 1 <= len(persona) <= 2000:
             raise ValueError("persona must contain 1 to 2000 characters")
         self.provider = provider
+        self.budget = budget or getattr(provider, "budget", None) or ContextBudget(social=True)
         self.persona = persona
         self.histories = OrderedDict()
         self.lock = threading.Lock()
@@ -168,19 +174,23 @@ class SocialBrain:
             history = self.histories.get(session, [])
             instructions = self.persona + ("\n" + INTENT_INSTRUCTIONS if with_intent else
                                            "\nこの返答経路では会話のみで、操作を依頼する場合は !agent do follow / look / stop を案内してください。")
-            messages = [{"role": "system", "content": instructions}] + history + [{"role": "user", "content": text}]
+            user = {"role": "user", "content": text}
+            continuation = with_intent and keep_current_request(text)
+            if continuation:
+                history = self.budget.trim_history(history)
+            else:
+                messages, history = self.budget.prepare({"role": "system", "content": instructions}, history, user,
+                                                       SOCIAL_RESPONSE_FORMAT if with_intent else None)
             if with_intent:
                 # No world state is available here: acknowledge unchanged behavior, never claim a task.
                 result = ({"reply": "わかった。今の動作は変えないよ。", "intent": "none"}
-                          if keep_current_request(text) else validate_social_turn(self.provider.reply_with_intent(messages)))
+                          if continuation else validate_social_turn(self.provider.reply_with_intent(messages)))
                 if result["intent"] != "none" and not allows_intent(text):
                     result = {"reply": "その表現では操作を変更しません。今してほしい操作を、ひとつだけ直接依頼してください。", "intent": "none"}
                 reply = result["reply"]
             else:
                 reply = validate_reply(self.provider.reply(messages))
-            recent = (history + [{"role": "user", "content": text}, {"role": "assistant", "content": reply}])[-12:]
-            while len(recent) > 2 and sum(len(item["content"]) for item in recent) > 4000:
-                recent = recent[2:]
+            recent = self.budget.trim_history(history + [user, {"role": "assistant", "content": reply}])
             self.histories[session] = recent
             self.histories.move_to_end(session)
             while len(self.histories) > 32:

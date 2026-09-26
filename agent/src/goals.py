@@ -8,6 +8,7 @@ from collections import OrderedDict
 
 from decision import GOALS, DecisionError, sanitize, validate_decision
 from state_cache import SyncError, identity
+from context_budget import BudgetExceeded
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
 REASONS = {"accepted", "completed", "replaced", "stopped", "unsafe_state", "path_not_found",
@@ -117,6 +118,11 @@ class GoalManager:
                                        "dimension": entry["dimension"], **validated}
                     entry["status"], entry["readyAt"] = "ready", self.clock()
                     LOG.info("action ready revision=%d kind=%s", entry["revision"], validated["decision"]["action"])
+            except BudgetExceeded as exc:
+                LOG.warning("goal context budget rejected code=%s", str(exc))
+                with self.lock:
+                    if self.entries.get(session) is entry:
+                        entry["status"], entry["error"] = "failed", str(exc)
             except (DecisionError, SyncError, ValueError):
                 with self.lock:
                     if self.entries.get(session) is entry:
