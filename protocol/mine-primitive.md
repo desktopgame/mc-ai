@@ -1,7 +1,7 @@
 # mine primitive — MOD 0.0.19 / protocol 2
 
 状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加し、候補品質を改善した増分。
-自動テストはPython 91件・Java 61件。基本の経時破壊は実ゲームで確認済み。
+自動テストはPython 91件・Java 61件。基本の経時破壊と表面露出フィルタを実ゲームで確認済み。
 
 ## 目的と固定した判断
 
