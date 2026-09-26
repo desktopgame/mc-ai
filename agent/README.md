@@ -54,6 +54,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:8767/v1/state -Method Post -ContentType 
 状態には `stale`・最終更新からの秒数・sequenceを付ける。ゲームの一時停止中も更新が止まるため、15秒経過でstaleになる。
 キャッシュから判断するには `/v1/decision` へstateの代わりにsessionを指定する。staleまたはCompanionが未読込なら409を返す。
 この場合もモデルへ送るのは目的と必要な数値状態だけで、所持品全体・イベント履歴・セッションID・会話は送らない。操作の自動実行はしない。
+拾得・受け渡しの判断でも、送るのは近くの落下物の個数と最短距離、Companionの所持点数だけで、アイテム名やエンティティIDは送らない。
 
 キャッシュは最大32セッション・各100イベント。新しい観測による古いセッションの追い出しと、読み出し時のコピーでメモリ量・外部からの改変を制限する。
 観測APIの入力は32KiB、その他は8KiBまで。仕様とfixtureは [Protocol README](../protocol/README.md) を参照。

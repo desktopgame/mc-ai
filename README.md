@@ -355,16 +355,33 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-0.0.5.jar`。開発クライアントのゲームディレクトリは `forge-mod/run`。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.11`。バージョンは `forge-mod/build.gradle` で管理する）。
+開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
 旧ForgeGradleの配布先・Gradle互換性の問題を避けるため、[anatawa12のForgeGradle 1.2修正版](https://github.com/anatawa12/ForgeGradle-1.2)を利用する。バージョンは固定し、動的な `+` 指定は使わない。
 
 ## Prism Launcherへのインストール
 
+ビルド後は次のスクリプトで配置する。ゲームが起動中なら中断し、指定バージョン以外の `mc-ai-companion-*.jar` を `.disabled` にして、
+同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
+
+```powershell
+.\scripts\deploy-mod.ps1 -Version 0.0.11
+```
+
+Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。
+起動後はポートの待受と該当プロセスが1つだけであることを確認する（PythonのHTTPServerは同一ポートへ二重bindできてしまうため）。
+
+```powershell
+.\scripts\restart-daemon.ps1
+```
+
+手動で行う場合の手順:
+
 1. 対象のゲームを終了する。
 2. Prism Launcherで `1.7.10-mod-basic` のフォルダーを開く。
-3. `minecraft/mods/` に生成jarをコピーする。OpenALFixも残しておく。
+3. `minecraft/mods/` に生成jarをコピーする。OpenALFixも残しておく。古いjarは `.jar.disabled` へ改名する。
 4. インスタンスを起動し、タイトル画面とMods一覧の `MC AI Companion` を確認する。
 5. `minecraft/logs/fml-client-latest.log` で上記の初期化メッセージを確認する。開発起動時はコンソールにも出力される。
 
