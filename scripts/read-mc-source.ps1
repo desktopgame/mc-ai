@@ -2,7 +2,8 @@
 # Optionally filter with -Pattern (a regex passed to Select-String).
 param(
     [Parameter(Mandatory = $true)][string]$SourceEntry,
-    [string]$Pattern
+    [string]$Pattern,
+    [int]$Context = 0
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
@@ -21,4 +22,7 @@ try {
 } finally {
     $zip.Dispose()
 }
-if ($Pattern) { $text -split "`n" | Select-String -Pattern $Pattern } else { $text }
+if ($Pattern) {
+    if ($Context -gt 0) { $text -split "`n" | Select-String -Pattern $Pattern -Context $Context }
+    else { $text -split "`n" | Select-String -Pattern $Pattern }
+} else { $text }

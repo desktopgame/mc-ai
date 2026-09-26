@@ -157,6 +157,22 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(view["status"], "failed")
         self.assertEqual(view["skill"]["result"]["reason"], "no_block_in_range")
 
+    def test_mine_blocked_target_is_skipped_never_reissued_or_auto_broken(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(blocks={"block-a": block(4), "block-b": block(6)}, seq=1), True)
+        action = manager.update(mine_goal(1, epoch=self.epoch))["action"]
+        self.assertEqual(action["targetRef"], "block-a")
+        manager.result(self.receipt(action, "failed", "blocked", {"destroyed": {"block": "minecraft:log", "count": 0}}))
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertIsNotNone(view["action"])
+        self.assertEqual(view["action"]["targetRef"], "block-b")
+        manager.result(self.receipt(view["action"], "failed", "blocked", {"destroyed": {"block": "minecraft:log", "count": 0}}))
+        self.now[0] = SEARCH_WINDOW + 1
+        manager.tick()
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["skill"]["result"]["reason"], "no_block_in_range")
+
     def test_duplicate_and_conflicting_results(self):
         states, manager, self.epoch = self.create()
         states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
@@ -345,6 +361,9 @@ class SkillTests(unittest.TestCase):
                 manager.update(mine_goal(1, block_name=bad_block, epoch=self.epoch))
         with self.assertRaises(SkillRequestError):
             manager.update(mine_goal(1, count=0, epoch=self.epoch))
+        for bad_count in (2, 64):
+            with self.assertRaises(SkillRequestError):
+                manager.update(mine_goal(1, count=bad_count, epoch=self.epoch))
         with self.assertRaises(SkillRequestError):
             manager.update({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
                             "goal": {"type": "collect_drop", "target": {"item": "minecraft:log"},

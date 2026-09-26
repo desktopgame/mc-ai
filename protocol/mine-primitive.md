@@ -1,7 +1,7 @@
-# mine primitive — MOD 0.0.14 / protocol 2
+# mine primitive — MOD 0.0.15 / protocol 2
 
 状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加した増分。
-自動テストはPython 81件・Java 43件。実ゲーム検証は未実施。
+自動テストはPython 82件・Java 45件。基本の経時破壊は実ゲームで確認済み（遮蔽・count境界は未検証）。
 
 ## 目的と固定した判断
 
@@ -21,6 +21,16 @@
   到達範囲を外れたら途中経過をリセットして近づき直す。硬さ0以下は即時、負（bedrock等）は `tool_unavailable`。
 - `mine` の進捗は `mined`（破壊数）。receiptは `destroyed:{block,count}`。
   これは将来の `collect(log,N)` の取得progressへ直接加算しない。
+- **`mine` goal の count は必ず1**。`mine_target` は1 action = 1 block。複数個の反復は将来の
+  `collect_block` / `collect(block,N)` Skillの責務。count 2以上は `unsupported_count` で拒否する。
+- **遮蔽 / 到達可能性を採掘開始前とworld mutation直前の両方で再検証**する。観測候補として
+  「見えている/近い」ことと実行可能であることを同一視しない。
+  - air・collisionを持たない非固体（草/花）・leaves は通過可能（leavesはMVPではsoft obstruction扱い）。
+  - glass / stone / dirt / wood / ore など `Material.isSolid()` のブロックは遮蔽。
+  - 判定は `MineObstruction` が `Material.isSolid()` と leaves 例外で行い、独自の巨大allowlistは作らない。
+  - 遮蔽時は `blocked` で失敗し、**邪魔なブロックを勝手に複数破壊しない**（1 action = 1 block維持）。
+    将来は上位Skill/Plannerが obstruction を `mine_target` で先に処理する。
+  - `blocked` は失敗候補として除外して次の候補へ進み、連続失敗カウントには数えない。
 
 ## 観測（v1 snapshot/delta に追加）
 

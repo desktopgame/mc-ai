@@ -397,6 +397,11 @@ public final class ActionBridge {
                             && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
                     return;
                 }
+                if (!blockReachable(companion, action.targetRef)) {
+                    if (enqueueSkillResult(action.actionId, action.sequence, "failed", "blocked", "block", action.block, 0)
+                            && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "blocked", 0); }
+                    return;
+                }
             } else {
                 EntityItem target = findTarget(companion, action.targetRef, action.item);
                 if (target == null) {
@@ -519,20 +524,33 @@ public final class ActionBridge {
         return null;
     }
 
-    /** The fixed mine target must still be the expected block within observation range. */
-    private boolean blockMatches(CompanionEntity companion, String targetRef, String blockName) {
+    /** Parses "block-<x>_<y>_<z>" into coordinates, or null when malformed. */
+    private int[] blockPosition(String targetRef) {
         String body = targetRef.startsWith("block-") ? targetRef.substring("block-".length()) : targetRef;
         String[] parts = body.split("_");
-        if (parts.length != 3) { return false; }
-        int x, y, z;
-        try { x = Integer.parseInt(parts[0]); y = Integer.parseInt(parts[1]); z = Integer.parseInt(parts[2]); }
-        catch (NumberFormatException error) { return false; }
-        if (!companion.worldObj.blockExists(x, y, z)) { return false; }
-        Block block = companion.worldObj.getBlock(x, y, z);
+        if (parts.length != 3) { return null; }
+        try { return new int[] {Integer.parseInt(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2])}; }
+        catch (NumberFormatException error) { return null; }
+    }
+
+    /** The fixed mine target must still be the expected block within observation range. */
+    private boolean blockMatches(CompanionEntity companion, String targetRef, String blockName) {
+        int[] pos = blockPosition(targetRef);
+        if (pos == null) { return false; }
+        if (!companion.worldObj.blockExists(pos[0], pos[1], pos[2])) { return false; }
+        Block block = companion.worldObj.getBlock(pos[0], pos[1], pos[2]);
         if (block == null || block == Blocks.air) { return false; }
         Object name = Block.blockRegistry.getNameForObject(block);
         if (name == null || !name.toString().equals(blockName)) { return false; }
-        return companion.getDistanceSq(x + 0.5D, y + 0.5D, z + 0.5D) <= CompanionEntity.ITEM_RANGE_SQUARED;
+        return companion.getDistanceSq(pos[0] + 0.5D, pos[1] + 0.5D, pos[2] + 0.5D) <= CompanionEntity.ITEM_RANGE_SQUARED;
+    }
+
+    /** Direct physical access to the target block: not covered by glass/stone/wood/ore, leaves allowed. */
+    private boolean blockReachable(CompanionEntity companion, String targetRef) {
+        int[] pos = blockPosition(targetRef);
+        if (pos == null) { return false; }
+        return MineObstruction.accessible(companion.worldObj, companion.posX,
+                companion.posY + companion.getEyeHeight(), companion.posZ, pos[0], pos[1], pos[2]);
     }
 
     private void result(String status, String reason) {

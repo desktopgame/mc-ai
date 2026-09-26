@@ -513,6 +513,13 @@ class SkillManager:
             skill.excluded.add(target_ref)
             self._finalize(skill, "failed", parsed["reason"])
             return
+        if parsed["reason"] == "blocked":
+            # A visible candidate is not necessarily executable. Skip it and try the next without
+            # counting a consecutive failure; a future Skill/Planner will mine the obstruction.
+            skill.excluded.add(target_ref)
+            skill.phase = "selecting"
+            self._step(skill)
+            return
         skill.failures += 1
         if parsed["reason"] in PATH_FAILURES:
             skill.saw_path_failure = True

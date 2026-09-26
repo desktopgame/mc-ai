@@ -21,7 +21,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.12.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **76件**・Java **40件**とビルドに成功。実ゲームで `minecraft:stick` の基本収集（対象固定）を確認済み。部分収納・取消・経路失敗は未検証。
 
-## mine primitive — 0.0.14 / protocol 2
+## mine primitive — 0.0.15 / protocol 2
 
 `mine_target`（1 action = 1 block破壊）と、mine候補の上限付きblock観測を追加した。詳細は [mine primitive](protocol/mine-primitive.md) を参照。
 
@@ -32,11 +32,13 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - 観測はCompanion周辺16ブロック（水平±16・垂直±8）の**allowlist blockのみ**、block typeごとに最近傍4件・合計最大32候補。実座標はDaemonへ渡さず、`block-<x>_<y>_<z>` のopaque参照とregistry名・距離だけを送る。
 - 道具選択はForgeが決定的に行う。素手で掘れるブロックは素手、必須ツールが無ければ `tool_unavailable`。自動クラフトはしない。
 - 破壊は block hardness と tool speed に応じた時間がかかり、`destroyBlockInWorldPartially` の破壊アニメーションと `swingItem` を伴う。
+- **遮蔽/到達可能性を採掘開始前とworld変更直前の両方で再検証**する。air・非固体（草/花）・leavesは通過可、glass/stone/dirt/wood/ore等のsolidは遮蔽。遮蔽時は `blocked` で失敗し、邪魔なブロックを勝手に複数破壊しない。
+- **`mine` goal の count は1固定**（2以上は `unsupported_count` で拒否）。反復は将来の `collect_block`/`collect(block,N)` の責務。
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.14.jar`。Daemonも同じ版へ更新する。
-2026-09-26: Python **81件**・Java **43件**とビルドに成功。実ゲーム検証は未実施。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.15.jar`。Daemonも同じ版へ更新する。
+2026-09-26: Python **82件**・Java **45件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊を確認済み。遮蔽・count境界・素手/道具選択・連続採掘は未検証。
 
 ## コンテキスト予算 — Daemon
 
@@ -391,7 +393,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.14`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.15`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -403,7 +405,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.14
+.\scripts\deploy-mod.ps1 -Version 0.0.15
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

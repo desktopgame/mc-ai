@@ -253,6 +253,10 @@ public final class CompanionEntity extends EntityCreature {
 
     /** Breaks one block with the best tool, or fails tool_unavailable when a required tool is missing. */
     private void breakBlock(Block block, int x, int y, int z) {
+        // Re-check direct access immediately before mutating the world.
+        if (!MineObstruction.accessible(worldObj, posX, posY + getEyeHeight(), posZ, x, y, z)) {
+            resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
+        }
         int meta = worldObj.getBlockMetadata(x, y, z);
         ItemStack tool = bestTool(block, meta);
         if (tool == null && !handCanHarvest(block, meta)) {
@@ -457,6 +461,10 @@ public final class CompanionEntity extends EntityCreature {
             getNavigator().clearPathEntity();
             if (System.nanoTime() > controlDeadline) {
                 resetMineProgress(); stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;
+            }
+            // Direct access required before mining starts: never dig through a blocking block.
+            if (!MineObstruction.accessible(worldObj, posX, posY + getEyeHeight(), posZ, mineX, mineY, mineZ)) {
+                resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
             }
             int meta = worldObj.getBlockMetadata(mineX, mineY, mineZ);
             ItemStack tool = bestTool(block, meta);

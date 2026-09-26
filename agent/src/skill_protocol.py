@@ -19,10 +19,10 @@ ACTION_STATUS = ("running", "succeeded", "failed", "cancelled")
 # Reasons a Skill action receipt may carry. `target_lost` / `target_not_ready` / `tool_unavailable`
 # are Skill-only.
 ACTION_REASONS = ("accepted", "completed", "target_lost", "target_not_ready", "tool_unavailable",
-                  "path_not_found", "inventory_full", "inventory_empty", "owner_unavailable",
+                  "blocked", "path_not_found", "inventory_full", "inventory_empty", "owner_unavailable",
                   "companion_unavailable", "unsafe_state", "expired", "disconnected", "stopped",
                   "replaced", "action_failed")
-FAILURE_REASONS = ("target_lost", "target_not_ready", "tool_unavailable", "path_not_found",
+FAILURE_REASONS = ("target_lost", "target_not_ready", "tool_unavailable", "blocked", "path_not_found",
                    "inventory_full", "unsafe_state", "owner_unavailable", "companion_unavailable",
                    "expired", "disconnected", "action_failed")
 # A missing required tool cannot be fixed by trying another target of the same kind.
@@ -30,7 +30,7 @@ TERMINAL_FAILURE_REASONS = ("tool_unavailable",)
 PATH_FAILURES = ("path_not_found",)
 
 SKILL_REASONS = ("completed", "no_item_in_range", "no_block_in_range", "path_not_found",
-                 "retry_exhausted", "inventory_full", "tool_unavailable", "unsafe_state",
+                 "retry_exhausted", "inventory_full", "tool_unavailable", "blocked", "unsafe_state",
                  "owner_unavailable", "companion_unavailable", "stale_state", "expired",
                  "disconnected", "stopped", "replaced", "action_failed")
 
@@ -119,7 +119,10 @@ def parse_mine(goal):
     if goal.get("type") != "mine":
         raise SkillRequestError("invalid_request")
     parsed = _parse_target(goal, "block", SUPPORTED_BLOCKS, "unsupported_block")
-    return {"type": "mine", "target": {"block": parsed["block"]}, "count": parsed["count"], "constraints": []}
+    # mine is a primitive check: exactly one block. Repetition belongs to a future collect_block Skill.
+    if parsed["count"] != 1:
+        raise SkillRequestError("unsupported_count")
+    return {"type": "mine", "target": {"block": parsed["block"]}, "count": 1, "constraints": []}
 
 
 def parse_goal_object(goal):
