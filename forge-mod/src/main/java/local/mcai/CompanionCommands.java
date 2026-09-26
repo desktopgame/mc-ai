@@ -13,10 +13,13 @@ import org.apache.logging.log4j.LogManager;
 import java.util.Locale;
 
 public final class CompanionCommands {
+    private final ActionBridge actions;
+    public CompanionCommands(ActionBridge actions) { this.actions = actions; }
     @SubscribeEvent public void onChat(ServerChatEvent event) {
         String input = event.message.trim();
         if (!(input.equals("!agent") || input.startsWith("!agent ")) || input.equals("!agent ping")
-                || input.equals("!agent chat") || input.startsWith("!agent chat ") || input.equals("!agent forget")) { return; }
+                || input.equals("!agent chat") || input.startsWith("!agent chat ") || input.equals("!agent forget")
+                || input.equals("!agent do") || input.startsWith("!agent do ")) { return; }
         event.setCanceled(true);
         try {
             DebugCommand command = DebugCommand.parse(input);
@@ -29,10 +32,15 @@ public final class CompanionCommands {
 
     private void execute(EntityPlayerMP player, DebugCommand command) {
         if (command.type.equals("help")) {
-            reply(player, "!agent spawn / follow / stop / look / say メッセージ / status / ping / chat メッセージ / forget");
+            reply(player, "!agent spawn / follow / stop / look / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop");
             return;
         }
         CompanionEntity companion = find(player);
+        if (command.type.equals("stop")) {
+            actions.manualOverride(player);
+            if (companion != null) { companion.stop(); }
+            reply(player, "停止しました。待機中の判断も取り消しました。"); return;
+        }
         if (command.type.equals("spawn")) {
             if (companion != null) { reply(player, "Companionは既にいます。!agent status で確認できます。"); return; }
             if (!CompanionRegistry.get().find(player.getUniqueID().toString()).isEmpty()) {
@@ -44,6 +52,7 @@ public final class CompanionCommands {
         } else {
             if (companion == null) { reply(player, "Companionが読み込まれていません。!agent spawn で確認してください。"); return; }
             if (companion.worldObj != player.worldObj) { reply(player, "Companionは別のディメンションにいます。"); return; }
+            if (command.type.equals("follow") || command.type.equals("look")) { actions.manualOverride(player); }
             if (command.type.equals("follow")) { companion.follow(); reply(player, "ついていきます。"); }
             else if (command.type.equals("stop")) { companion.stop(); reply(player, "ここで待ちます。"); }
             else if (command.type.equals("look")) { companion.look(); reply(player, "そちらを向きます。"); }
@@ -57,7 +66,7 @@ public final class CompanionCommands {
         LogManager.getLogger(CompanionMod.MOD_ID).info("Manual action={} accepted", command.type);
     }
 
-    private CompanionEntity find(EntityPlayerMP player) {
+    public static CompanionEntity find(EntityPlayerMP player) {
         String owner = player.getUniqueID().toString();
         for (WorldServer world : MinecraftServer.getServer().worldServers) {
             if (world == null) { continue; }

@@ -10,7 +10,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.5",
+@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.6",
         acceptedMinecraftVersions = "[1.7.10]")
 public final class CompanionMod {
     public static final String MOD_ID = "mcaicompanion";
@@ -31,11 +31,15 @@ public final class CompanionMod {
     public void init(FMLInitializationEvent event) {
         EntityRegistry.registerModEntity(CompanionEntity.class, "Companion", 0, this, 80, 3, true);
         proxy.registerRenderers();
-        MinecraftForge.EVENT_BUS.register(new CompanionCommands());
+        ObservationBridge observations = new ObservationBridge(daemonUrl);
+        ActionBridge actions = new ActionBridge(daemonUrl, observations);
+        MinecraftForge.EVENT_BUS.register(new CompanionCommands(actions));
+        MinecraftForge.EVENT_BUS.register(actions);
         PingBridge bridge = new PingBridge(daemonUrl);
         MinecraftForge.EVENT_BUS.register(bridge);
         FMLCommonHandler.instance().bus().register(bridge);
-        FMLCommonHandler.instance().bus().register(new ObservationBridge(daemonUrl));
-        LogManager.getLogger(MOD_ID).info("MC AI Companion initialized (Phase 5)");
+        FMLCommonHandler.instance().bus().register(observations);
+        FMLCommonHandler.instance().bus().register(actions);
+        LogManager.getLogger(MOD_ID).info("MC AI Companion initialized (Action lifecycle)");
     }
 }

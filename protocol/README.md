@@ -1,4 +1,7 @@
-# Protocol v1 — Phases 1–5
+# Protocol v1
+
+MOD 0.0.6の実行用APIは [行動ライフサイクル](action-lifecycle.md) を参照。
+既存のturn/decisionの意味は変更しない。以下はPhases 1～5のAPIと実装時点の記録。
 
 HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数の `version: 1` を含める。
 

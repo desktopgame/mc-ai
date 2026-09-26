@@ -23,6 +23,7 @@ public final class ObservationBridge {
     private MinecraftServer server;
     private String session = UUID.randomUUID().toString();
     private String ownerId = "";
+    private EntityPlayerMP ownerPlayer;
     private JsonObject baseline;
     private int sequence = -1, ticks;
     private long nextSend;
@@ -30,6 +31,13 @@ public final class ObservationBridge {
     private volatile Completion completion;
 
     public ObservationBridge(String url) { baseUrl = url; }
+
+    /** Called only on the game thread. No action may use an unacknowledged session. */
+    public String actionSession(EntityPlayerMP player) {
+        return server == MinecraftServer.getServer() && baseline != null
+                && ownerPlayer == player && baseline.get("dimension").getAsInt() == player.dimension
+                && ownerId.equals(player.getUniqueID().toString()) ? session : null;
+    }
 
     private static final class Completion {
         final String session;
@@ -61,9 +69,11 @@ public final class ObservationBridge {
         if (players.size() != 1) { if (!ownerId.isEmpty()) { ownerId = ""; reset(); } return; }
         EntityPlayerMP player = (EntityPlayerMP) players.get(0);
         String id = player.getUniqueID().toString();
-        if (!id.equals(ownerId)) { ownerId = id; reset(); }
+        if (!id.equals(ownerId) || ownerPlayer != player) { ownerId = id; ownerPlayer = player; reset(); }
         if (baseline == null && System.currentTimeMillis() < nextSend) { return; }
         final ObservationDiff diff = new ObservationDiff(baseline, capture(player));
+        // Identity/dimension changes revoke all actions from the previous observation session.
+        if (diff.snapshot && baseline != null) { reset(); }
         if (!diff.snapshot && diff.events.size() == 0 && System.currentTimeMillis() < nextSend) { return; }
         final String sentSession = session;
         final int sentSequence = sequence + 1;

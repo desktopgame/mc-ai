@@ -2,6 +2,41 @@
 
 ## 現在地
 
+### 行動管理基盤の実装 — 2026-09-26
+
+MOD `0.0.6` に、既存のfollow/stop/lookを使ったAI判断→検証→実行→結果通知を追加した。
+下のPhase 0～5と中断時点の節は過去の記録。現在の操作と通信仕様はREADME冒頭と `protocol/action-lifecycle.md` を優先する。
+
+- `!agent do follow / look` で目的を置換し、キャッシュを使ったAI判断後に実行する。
+- `!agent stop` / `!agent do stop` はLLMを待たずに停止して旧判断を無効化する。手動follow/lookも旧AI目的を取り消す。
+- session・goalRevision・actionIdを使い、両側で古い判断を拒否する。実行直前の個体・ディメンション・体力・距離等も確認する。
+- Socialは独立した通信とFIFOを持ち、処理中1件＋待機4件・計2048文字。forget/再入場で旧返信を破棄する。
+- 自然文のintent分類、予約実行、進捗を使った会話生成、新しいGame Actionsはまだ実装しない。
+- 結果配送はメモリ上の有界キュー・最大3回の試行。再起動をまたぐ配送保証はない。
+
+自動検証: Python **34件**、Java **19件**（計53件）が成功。Forgeビルド成功。
+遅延推論中の取消、最新待機指示への置換、重複配送、旧結果の拒否、世代・個体変更、会話キュー上限を検証した。
+実ゲームでAI判断による追従・行動中の会話・手動停止を利用者が確認した。
+判断の実測は約1.8～3.1秒、会話は約2.1秒。継続的な性能保証ではない。
+経路が見つからず停止したケースもログで確認。経路探索自体は既存のMinecraft標準処理を使用している。
+判断中の取消後に勝手に動かないこと、約3秒の注視、連続した2発言への順番どおりの返答も利用者が確認した。
+ログでも取消後の旧判断が実行されないことと、lookのrunning→succeededの結果通知を確認。今回の基盤実装と基本的な実ゲーム検証は完了。
+新基盤の再接続・応答順逆転・重複配送・会話キュー上限・forgetによる旧返信拒否は自動テストまたはコード確認の範囲で、すべての異常系を実ゲームで再現したわけではない。
+
+Prismへ0.0.6を導入し、0.0.5は `.jar.disabled` として保持した。配置jarと成果物のSHA-256一致確認済み。
+Daemonは8767で起動。起動時PID36988は `.tools/lifecycle-daemon.pid` に記録した（停止前に実プロセスを照合すること）。
+ログは `.tools/lifecycle-daemon.stderr.log` / `.tools/lifecycle-daemon.stdout.log`。ping/pong応答を確認。
+実ゲーム確認用にPrismの `1.7.10-mod-basic` を起動した。
+作業終了時点でMinecraftとDaemonは起動したまま。今回はコミットしていない。
+
+追加した主要コード:
+
+- `agent/src/goals.py`: 有界の目的管理、推論worker、世代・結果対応。
+- `forge-mod/.../ActionBridge.java`: ゲームスレッドの実行権限、制御と結果の独立通信。
+- `forge-mod/.../GoalState.java` / `ActionProtocol.java`: Minecraft非依存の世代管理と検証。
+- `forge-mod/.../ConversationQueue.java`: 会話の有界FIFOと返信の世代。
+- `agent/tests/test_goals.py` / `forge-mod/.../LifecycleTest.java`: 割り込み・遅延等の回帰テスト。
+
 ### 再開時の方針追記
 
 利用者は次の作業として、既存のfollow/stop/lookをAI判断から実行する接続を選択した。

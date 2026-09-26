@@ -6,6 +6,7 @@ from pathlib import Path
 from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSONA
 from decision import DecisionService, MockDecisionProvider, LocalDecisionProvider, DecisionError
 from state_cache import StateCache, SyncError
+from goals import GoalManager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
@@ -70,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, {"version": 1, "error": code})
 
     def do_POST(self):
-        if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state"):
+        if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state", "/v1/goal", "/v1/action-result"):
             self.error(404, "not_found")
             return
         if self.headers.get_content_type() != "application/json":
@@ -93,7 +94,12 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("incomplete_body")
             payload = json.loads(raw.decode("utf-8"))
-            if self.path in ("/v1/snapshot", "/v1/events"):
+            if self.path in ("/v1/goal", "/v1/action-result"):
+                manager = getattr(self.server, "goals", None)
+                if manager is None: raise DecisionError("goals_not_configured")
+                response = manager.update(payload) if self.path == "/v1/goal" else manager.result(payload)
+                LOG.info("goal endpoint=%s revision=%s status=%s", self.path, payload.get("goalRevision"), response.get("status", "result"))
+            elif self.path in ("/v1/snapshot", "/v1/events"):
                 response = self.server.states.update(payload, snapshot=self.path == "/v1/snapshot")
                 LOG.info("observation kind=%s sequence=%d events=%d", self.path, response["sequence"], len(payload.get("events", [])))
             elif self.path == "/v1/state":
@@ -168,6 +174,7 @@ def main():
         server.brain = brain
         server.decisions = decisions
         server.states = StateCache()
+        server.goals = GoalManager(server.states, decisions)
         LOG.info("Agent Daemon listening on %s:%d (protocol 1, social=%s)", args.host, args.port, brain is not None)
         try:
             server.serve_forever()

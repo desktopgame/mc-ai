@@ -2,6 +2,38 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## 割り込みと行動管理の基盤 — 0.0.6
+
+Phase 6の新操作を増やす前に、既存のfollow/stop/lookをAI判断から実行する経路を追加した。
+会話・目的・実行の状態と通信を分離し、取消後の古い判断、重複action、旧actionの遅延結果を拒否する。
+以下が現在の仕様で、後続のPhase 1～5の節は各段階の記録。
+
+| 入力 | 動作 |
+| --- | --- |
+| `!agent do follow` | 現在の行動を止め、新しい目的でAIに判断を依頼。検証後に追従または待機 |
+| `!agent do look` | 同様に注視を依頼。約3秒で完了 |
+| `!agent stop` / `!agent do stop` | LLMを待たず、その場で停止。待機中の判断も取消 |
+| `!agent follow` / `!agent look` | 従来の手動操作。古いAI指示は取消 |
+| `!agent chat メッセージ` | 行動を継続しながら会話。処理中は最大4件・計2048文字を順番待ち |
+| `!agent forget` | 会話の待機列と古い返答を取消し、新しい会話セッションへ切替。行動は継続 |
+
+`chat ついてきて` の自然文からはまだ操作しない。自然文の分類、指示の予約、pickup等は未実装。
+追従の判断時にはCompanionから2ブロックより遠く32ブロック以内にいること。近すぎる場合、現在の判断ルールは待機を選ぶ。
+指示変更は旧行動を取り消してから判断する。新判断が失敗しても旧行動は復活しない。
+AI操作中の接続失敗・危険な状態・経路失敗では停止する。再接続で自動再開せず、再度指示する。
+一時停止からの復帰時も、古い応答の期限や再同期によって指示が取り消される場合がある。
+
+起動は従来と同じ。Daemonもこの版へ更新し、Prismには `forge-mod/build/libs/mc-ai-companion-0.0.6.jar` を配置する。
+モデル設定はSocialとDecisionの両方を指定する。
+
+```powershell
+python agent/src/daemon.py --port 8767 --config agent/config.local.json --decision-config agent/decision.local.json
+```
+
+通信と制限の詳細は [行動ライフサイクル](protocol/action-lifecycle.md) を参照。
+自動テストと実ゲームの検証状況は [HANDOFF.md](HANDOFF.md) に記録する。
+2026-09-26: Python34件・Java19件のテストとビルドに成功。実ゲームでAI追従、行動中の会話、停止、判断中の取消、注視の完了、連続会話への順番どおりの返答を確認した。
+
 ## Phase 5 — 状態差分と観測
 
 MOD `0.0.5` は、ワールド入場時に `POST /v1/snapshot` で現在状態を送り、その後は `POST /v1/events` へ変更だけを送る。

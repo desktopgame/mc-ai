@@ -1,4 +1,9 @@
-# Agent Daemon — Phase 5
+# Agent Daemon — Action lifecycle
+
+MOD 0.0.6向けに非同期の目的管理 `/v1/goal` と実行結果 `/v1/action-result` を追加した。
+起動引数・設定・キーは従来どおり。DecisionProviderの推論待ち中も取消・置換を受け付け、古い結果を採用しない。
+セッション最大32、推論worker1本、未開始の目的は各セッションの最新1件のみ。詳細は [行動ライフサイクル](../protocol/action-lifecycle.md)。
+`/v1/decision` は引き続き実行しない検証用API。以下のPhase 5の観測機能も維持する。
 
 Python標準ライブラリで動く固定ping/pong、観測キャッシュ、ローカルSocial BrainとTactical Decision。確認環境はPython 3.14.0。モデル設定を省略するとpingと観測キャッシュだけを利用できる。
 
