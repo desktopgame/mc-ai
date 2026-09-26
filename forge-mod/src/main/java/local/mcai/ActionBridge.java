@@ -19,6 +19,7 @@ public final class ActionBridge {
     private final IoExecutors io;
     private final GoalState state = new GoalState();
     private final IntentOrder intentOrder = new IntentOrder();
+    private final boolean verbose;
     private EntityPlayerMP owner;
     private CompanionEntity active;
     private String expectedCompanion;
@@ -27,6 +28,7 @@ public final class ActionBridge {
     private boolean inFlight, resultInFlight;
     private volatile Completion completion;
     private volatile ResultCompletion resultCompletion;
+    private volatile String displayState = "idle";
     private final ArrayDeque<ResultJob> results = new ArrayDeque<ResultJob>();
 
     private static final class Completion {
@@ -45,10 +47,14 @@ public final class ActionBridge {
         ResultCompletion(ResultJob job, boolean ok) { this.job = job; this.ok = ok; }
     }
 
-    public ActionBridge(String url, ObservationBridge observations, IoExecutors io) {
-        client = new DaemonClient(url); this.observations = observations; this.io = io;
+    public ActionBridge(String url, ObservationBridge observations, IoExecutors io, boolean verbose) {
+        client = new DaemonClient(url); this.observations = observations; this.io = io; this.verbose = verbose;
     }
     private void reply(String text) { if (owner != null) { owner.addChatMessage(new ChatComponentText("[Companion] " + text)); } }
+    /** Internal lifecycle chatter; the on-screen icon covers this by default. */
+    private void debugReply(String text) { if (verbose) { reply(text); } }
+    /** thinking/running/idle for the HUD icon, cross-thread via the volatile field. */
+    public String displayState() { return displayState; }
     private JsonObject envelope(String session, int revision) {
         JsonObject body = new JsonObject(); body.addProperty("version", 1);
         body.addProperty("session", session); body.addProperty("goalRevision", revision); return body;
@@ -80,7 +86,7 @@ public final class ActionBridge {
     /** Returns false for stale/rejected intents so their optimistic Social reply is not displayed. */
     public boolean acceptIntent(EntityPlayerMP player, IntentOrder.Ticket ticket, String goal) {
         synchronize(player);
-        if (!intentOrder.current(ticket)) { reply("以前の指示への返答は取り消しました。"); return false; }
+        if (!intentOrder.current(ticket)) { debugReply("以前の指示への返答は取り消しました。"); return false; }
         return requestGoal(player, goal, ticket);
     }
 
@@ -107,7 +113,7 @@ public final class ActionBridge {
             else { manualOverride(player); }
             CompanionEntity companion = CompanionCommands.find(player);
             if (companion != null) { companion.stop(); }
-            reply("停止しました。待機中の判断も取り消しました。"); return true;
+            debugReply("停止しました。待機中の判断も取り消しました。"); return true;
         }
         MinecraftServer server = MinecraftServer.getServer();
         CompanionEntity companion = CompanionCommands.find(player);
@@ -121,7 +127,7 @@ public final class ActionBridge {
         state.replace(goal);
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         deadline = System.nanoTime() + 60000000000L; nextPoll = 0;
-        reply("新しい指示を受け付けました。判断を待っています。");
+        debugReply("新しい指示を受け付けました。判断を待っています。");
         return true;
     }
 
@@ -131,7 +137,7 @@ public final class ActionBridge {
         body.addProperty("actionId", state.actionId); body.addProperty("status", status); body.addProperty("reason", reason);
         if (results.size() >= 64) {
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Action result queue full; notification lost");
-            reply("実行結果を送信できませんでした。接続を確認してください。"); return;
+            debugReply("実行結果を送信できませんでした。接続を確認してください。"); return;
         }
         results.add(new ResultJob(body));
         LogManager.getLogger(CompanionMod.MOD_ID).info("Action result revision={} status={} reason={}", state.revision, status, reason);
@@ -150,7 +156,7 @@ public final class ActionBridge {
             state.finish(state.session, state.revision, state.actionId, "failed"); result("failed", reason);
         }
         state.replace(null); nextPoll = 0;
-        reply("指示を完了できなかったため停止しました（" + reason + "）。");
+        debugReply("指示を完了できなかったため停止しました（" + reason + "）。");
     }
 
     private void consume(Completion done) {
@@ -176,11 +182,11 @@ public final class ActionBridge {
                 fail("unsafe_state"); return;
             }
             active = companion;
-            if (action.type.equals("follow")) { companion.follow(); result("running", "accepted"); reply("追従を始めます。"); }
-            else if (action.type.equals("look")) { companion.look(); result("running", "accepted"); reply("そちらを向きます。"); }
+            if (action.type.equals("follow")) { companion.follow(); result("running", "accepted"); debugReply("追従を始めます。"); }
+            else if (action.type.equals("look")) { companion.look(); result("running", "accepted"); debugReply("そちらを向きます。"); }
             else {
                 companion.stop(); state.finish(state.session, state.revision, action.id, "succeeded");
-                result("succeeded", "completed"); active = null; reply("判断結果に従って待機します。");
+                result("succeeded", "completed"); active = null; debugReply("判断結果に従って待機します。");
             }
         } catch (RuntimeException e) {
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected action response ({})", e.getClass().getSimpleName());
@@ -206,6 +212,7 @@ public final class ActionBridge {
                 result(success ? "succeeded" : "failed", success ? "completed" : "owner_unavailable"); active = null;
             }
         }
+        displayState = state.status.equals("thinking") ? "thinking" : state.status.equals("running") ? "running" : "idle";
         sendResults();
         if (owner == null || state.session == null || inFlight || System.nanoTime() < nextPoll) { return; }
         if (sentRevision == state.revision && !(state.status.equals("thinking") || state.status.equals("running"))) { return; }
@@ -236,7 +243,7 @@ public final class ActionBridge {
                     results.poll();
                     if (!done.ok) {
                         LogManager.getLogger(CompanionMod.MOD_ID).warn("Action result delivery failed after 3 attempts");
-                        reply("実行結果の通知に失敗しました。ゲーム内の状態は !agent status で確認できます。");
+                        debugReply("実行結果の通知に失敗しました。ゲーム内の状態は !agent status で確認できます。");
                     }
                 } else { done.job.retryAt = System.nanoTime() + 1000000000L; }
             }

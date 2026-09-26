@@ -10,13 +10,14 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.8",
+@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.9",
         acceptedMinecraftVersions = "[1.7.10]")
 public final class CompanionMod {
     public static final String MOD_ID = "mcaicompanion";
     @SidedProxy(clientSide = "local.mcai.ClientProxy", serverSide = "local.mcai.CommonProxy")
     public static CommonProxy proxy;
     private String daemonUrl;
+    private boolean verboseMessages;
 
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
@@ -24,6 +25,9 @@ public final class CompanionMod {
         config.load();
         daemonUrl = config.getString("daemonUrl", "network", "http://127.0.0.1:8766",
                 "Agent Daemon base URL. LAN use must be configured explicitly.");
+        verboseMessages = config.getBoolean("verboseChatMessages", "debug", false,
+                "Show internal action/goal lifecycle chat messages (queued, thinking, stopped, failed, ...). "
+                        + "Off by default; the on-screen status icon shows thinking/acting/idle instead.");
         config.save();
     }
 
@@ -37,14 +41,15 @@ public final class CompanionMod {
             @Override public void run() { io.close(); }
         }, "mc-ai-io-shutdown"));
         ObservationBridge observations = new ObservationBridge(daemonUrl, io);
-        ActionBridge actions = new ActionBridge(daemonUrl, observations, io);
+        ActionBridge actions = new ActionBridge(daemonUrl, observations, io, verboseMessages);
         MinecraftForge.EVENT_BUS.register(new CompanionCommands(actions));
         MinecraftForge.EVENT_BUS.register(actions);
-        PingBridge bridge = new PingBridge(daemonUrl, actions, io);
+        PingBridge bridge = new PingBridge(daemonUrl, actions, io, verboseMessages);
         MinecraftForge.EVENT_BUS.register(bridge);
         FMLCommonHandler.instance().bus().register(bridge);
         FMLCommonHandler.instance().bus().register(observations);
         FMLCommonHandler.instance().bus().register(actions);
+        proxy.registerHud(actions, bridge);
         LogManager.getLogger(MOD_ID).info("MC AI Companion initialized (Action lifecycle)");
     }
 }

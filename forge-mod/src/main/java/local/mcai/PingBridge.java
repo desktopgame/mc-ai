@@ -15,20 +15,27 @@ public final class PingBridge {
     private final ActionBridge actions;
     private final IoExecutors io;
     private final ConversationQueue queue = new ConversationQueue();
+    private final boolean verbose;
     private MinecraftServer server;
     private EntityPlayerMP owner;
     private String session = UUID.randomUUID().toString(), forgetSession;
-    private boolean inFlight;
+    private volatile boolean inFlight;
     private volatile Completion completion;
     private static final class Completion {
         final ConversationQueue.Turn turn; final PingClient.Reply reply; final long received = System.nanoTime();
         Completion(ConversationQueue.Turn turn, PingClient.Reply reply) { this.turn = turn; this.reply = reply; }
     }
-    public PingBridge(String url, ActionBridge actions, IoExecutors io) { client = new PingClient(url); this.actions = actions; this.io = io; }
+    public PingBridge(String url, ActionBridge actions, IoExecutors io, boolean verbose) {
+        client = new PingClient(url); this.actions = actions; this.io = io; this.verbose = verbose;
+    }
     private void reset(EntityPlayerMP player) {
         queue.reset(); session = UUID.randomUUID().toString(); owner = player;
     }
     private void reply(String text) { if (owner != null) { owner.addChatMessage(new ChatComponentText("[Companion] " + text)); } }
+    /** Internal lifecycle chatter; the on-screen icon covers this by default. */
+    private void debugReply(String text) { if (verbose) { reply(text); } }
+    /** Social turn in flight, read cross-thread by the HUD icon. */
+    public boolean thinking() { return inFlight; }
 
     @SubscribeEvent public void onChat(ServerChatEvent event) {
         String message = event.message.trim();
@@ -45,7 +52,7 @@ public final class PingBridge {
             actions.stopFromChat(event.player);
         }
         else if (!queue.offer(message, actions.captureIntent(event.player))) { reply("会話の待機枠がいっぱいか、文章が長すぎます。少し待って短く送ってください。"); }
-        else { reply("受け付けました。"); }
+        else { debugReply("受け付けました。"); }
     }
 
     @SubscribeEvent public void onTick(TickEvent.ServerTickEvent event) {
@@ -59,7 +66,7 @@ public final class PingBridge {
             completion = null; inFlight = false;
             if (done.turn != null && queue.current(done.turn) && owner != null) {
                 if (done.reply.intent.equals("none")) { reply(done.reply.say); }
-                else if (System.nanoTime() - done.received > 5000000000L) { reply("時間が経過した指示は取り消しました。必要ならもう一度依頼してください。"); }
+                else if (System.nanoTime() - done.received > 5000000000L) { debugReply("時間が経過した指示は取り消しました。必要ならもう一度依頼してください。"); }
                 else if (actions.acceptIntent(owner, done.turn.intentTicket, done.reply.intent)) { reply(done.reply.say); }
             }
         }
