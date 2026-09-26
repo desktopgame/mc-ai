@@ -114,6 +114,35 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(TerminalError):
             store.record(dict(snap, status="cancelled"))
 
+    def test_duplicate_record_returns_existing_and_does_not_consume_sequence(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        first = store.record(snap)
+        duplicate = store.record(snap)
+        self.assertEqual(first, duplicate)
+        self.assertEqual(duplicate["eventSequence"], 1)
+        second = store.record({k: event(skill_id="s-2", terminal_id="t-2")[k] for k in event() if k != "eventSequence"})
+        self.assertEqual(second["eventSequence"], 2)   # sequence stays consecutive
+
+    def test_ack_closes_the_outbox_entry_and_never_regenerates_it(self):
+        for outcome, variant in (("displayed", "fallback"), ("suppressed", None)):
+            store = TerminalEventStore(clock=lambda: 0.0)
+            snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+            store.record(snap)
+            self.assertEqual(len(store.snapshot("boot", "world", after_sequence=0)["events"]), 1)
+            present = store.present("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+            self.assertEqual(present["mode"], "fallback")
+            store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", outcome, variant)
+            # ACKed terminal is gone from a full re-read, so a lost cursor cannot re-deliver it.
+            self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])
+            store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", outcome, variant)   # idempotent
+            self.assertIsNone(store.record(snap))   # closed identity is not regenerated
+            self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])
+            with self.assertRaises(TerminalError):   # conflicting ACK still rejected
+                other = "fallback" if outcome == "suppressed" else None
+                store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                              "suppressed" if outcome == "displayed" else "displayed", other)
+
     def test_present_and_deliver_idempotency_and_conflicts(self):
         store = TerminalEventStore(clock=lambda: 0.0)
         snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}

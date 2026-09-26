@@ -40,20 +40,30 @@ class TerminalEventStore:
 
     # ---- outbox ----------------------------------------------------------
     def record(self, snapshot):
-        """Register a finalized terminal snapshot once. Assigns the monotonic eventSequence."""
+        """Register a finalized terminal snapshot exactly once. Assigns the monotonic eventSequence.
+
+        Order matters: an identity is checked before any sequence is assigned. A duplicate with the
+        same immutable payload returns the existing event without consuming a sequence, and a
+        duplicate with different content is a conflict. A terminal that was already closed by a
+        displayed/suppressed ACK is never regenerated.
+        """
         epoch, session = snapshot["daemonEpoch"], snapshot["session"]
         identity = (epoch, session, snapshot["skillInstanceId"], snapshot["terminalId"])
+        payload = {key: value for key, value in snapshot.items() if key != "eventSequence"}
         with self.lock:
-            existing = self.by_session.get((epoch, session), OrderedDict()).get(identity)
-            sequence = self.sequences.get((epoch, session), 0) + 1
-            self.sequences[(epoch, session)] = sequence
-            event = dict(snapshot)
-            event["eventSequence"] = sequence
+            bucket = self.by_session.setdefault((epoch, session), OrderedDict())
+            existing = bucket.get(identity)
             if existing is not None:
-                if existing == event:
+                if {k: v for k, v in existing.items() if k != "eventSequence"} == payload:
                     return copy.deepcopy(existing)
                 raise TerminalError("terminal_identity_conflict")
-            bucket = self.by_session.setdefault((epoch, session), OrderedDict())
+            if identity in self.tombstones:
+                # Already delivered/suppressed/expired: never resurrect or re-sequence it.
+                return None
+            sequence = self.sequences.get((epoch, session), 0) + 1
+            self.sequences[(epoch, session)] = sequence
+            event = dict(payload)
+            event["eventSequence"] = sequence
             bucket[identity] = event
             self.recorded_at[identity] = self.clock()
             self._evict()
@@ -134,8 +144,17 @@ class TerminalEventStore:
             entry["state"] = "delivered" if outcome == "displayed" else "suppressed"
             entry["ack"] = (outcome, variant_id)
             self.tombstones[identity] = entry["state"]
+            # Close the outbox entry: an ACKed terminal is never delivered again by a later poll,
+            # even from afterSequence=0 or after the Forge loses its cursor.
+            self._close(identity)
             while len(self.tombstones) > MAX_EVENTS:
                 self.tombstones.popitem(last=False)
+
+    def _close(self, identity):
+        bucket = self.by_session.get((identity[0], identity[1]))
+        if bucket is not None:
+            bucket.pop(identity, None)
+        self.recorded_at.pop(identity, None)
 
     def _reject_same_skill(self, identity):
         skill_prefix = identity[:3]
