@@ -248,8 +248,9 @@ SKILL_TYPES = {"collect_drop": CollectDrop, "mine": Mine, "collect_block": Colle
 
 
 class SkillManager:
-    def __init__(self, states, registry, clock=time.monotonic):
+    def __init__(self, states, registry, clock=time.monotonic, terminal_store=None):
         self.states, self.registry, self.clock = states, registry, clock
+        self.terminal_store = terminal_store
         self.lock = threading.Lock()
         self.active = OrderedDict()   # session -> Skill
         self.other = OrderedDict()    # skillInstanceId -> Skill (settling or terminal)
@@ -427,6 +428,8 @@ class SkillManager:
             self.other[skill.skill_id] = skill
 
     def _finalize(self, skill, status, reason):
+        if skill.phase == "terminal":
+            return
         skill.phase = "terminal"
         skill.finished_at = self.clock()
         skill.result = {"skillInstanceId": skill.skill_id, "status": status, "reason": reason,
@@ -437,6 +440,18 @@ class SkillManager:
         self.other.move_to_end(skill.skill_id)
         LOG.info("skill terminal session=%s kind=%s status=%s reason=%s acquired=%d mined=%d requested=%d",
                  skill.session, skill.kind, status, reason, skill.acquired, skill.mined, skill.requested)
+        if self.terminal_store is not None:
+            # The terminal result is the authority: only its already-finalized values are recorded,
+            # once, without calling back into the Skill or any provider while holding the lock.
+            try:
+                self.terminal_store.record({
+                    "version": 2, "category": "skill_terminal", "terminalId": str(uuid.uuid4()),
+                    "daemonEpoch": self.registry.epoch, "session": skill.session,
+                    "goalRevision": skill.revision, "skillInstanceId": skill.skill_id,
+                    "type": skill.kind, "status": status, "reason": reason,
+                    "target": skill.target_json(), "progress": copy.deepcopy(skill.result["progress"])})
+            except Exception:  # A store failure must never strand the Skill or change its result.
+                LOG.exception("terminal event record failed skill=%s", skill.skill_id)
         self._expire_terminal()
 
     def _close_if_settled(self, skill):

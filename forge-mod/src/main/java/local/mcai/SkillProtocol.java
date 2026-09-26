@@ -265,4 +265,82 @@ public final class SkillProtocol {
         }
         return result;
     }
+
+    public static final String TERMINAL_CAPABILITY = "skill_terminal_social_v1";
+    private static final List<String> TERMINAL_TYPES = Arrays.asList("collect_drop", "mine", "collect_block");
+    private static final List<String> TERMINAL_STATUSES = Arrays.asList("completed", "failed", "cancelled");
+
+    private static String checkedIdentity(JsonObject o, String key) {
+        String value = string(o, key);
+        if (!value.matches("[A-Za-z0-9_-]{1,80}")) { throw new IllegalArgumentException("Invalid identity"); }
+        return value;
+    }
+
+    private static boolean bool(JsonObject o, String key) {
+        JsonElement value = o.get(key);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalArgumentException("Expected boolean");
+        }
+        return value.getAsBoolean();
+    }
+
+    /** A finalized terminal event. Immutable; the Daemon's snapshot is the authority for its values. */
+    public static final class TerminalEvent {
+        public final int eventSequence, goalRevision, requested, acquired, mined;
+        public final boolean complete;
+        public final String terminalId, daemonEpoch, session, skillInstanceId, type, status, reason, target;
+        TerminalEvent(JsonObject o) {
+            keys(o, "version", "category", "terminalId", "eventSequence", "daemonEpoch", "session",
+                    "goalRevision", "skillInstanceId", "type", "status", "reason", "target", "progress");
+            integer(o, "version", 2, 2);
+            if (!string(o, "category").equals("skill_terminal")) { throw new IllegalArgumentException("Bad category"); }
+            terminalId = checkedIdentity(o, "terminalId");
+            eventSequence = integer(o, "eventSequence", 1, Integer.MAX_VALUE);
+            daemonEpoch = checkedIdentity(o, "daemonEpoch");
+            session = checkedIdentity(o, "session");
+            goalRevision = integer(o, "goalRevision", 0, Integer.MAX_VALUE);
+            skillInstanceId = checkedIdentity(o, "skillInstanceId");
+            type = string(o, "type");
+            if (!TERMINAL_TYPES.contains(type)) { throw new IllegalArgumentException("Unsupported skill"); }
+            status = string(o, "status");
+            if (!TERMINAL_STATUSES.contains(status)) { throw new IllegalArgumentException("Unsupported status"); }
+            reason = string(o, "reason");
+            if (!reason.matches("[A-Za-z0-9_.:-]{1,128}")) { throw new IllegalArgumentException("Invalid reason"); }
+            String field = type.equals("collect_drop") ? "item" : "block";
+            JsonObject targetObj = o.getAsJsonObject("target");
+            keys(targetObj, field);
+            target = string(targetObj, field);
+            JsonObject progress = o.getAsJsonObject("progress");
+            if (type.equals("collect_block")) { keys(progress, "requested", "acquired", "mined", "complete"); }
+            else if (type.equals("mine")) { keys(progress, "requested", "mined", "complete"); }
+            else { keys(progress, "requested", "acquired", "complete"); }
+            requested = integer(progress, "requested", 1, 64);
+            if (type.equals("mine")) { mined = integer(progress, "mined", 0, requested); acquired = 0; }
+            else if (type.equals("collect_drop")) { acquired = integer(progress, "acquired", 0, requested); mined = 0; }
+            else { acquired = integer(progress, "acquired", 0, requested); mined = integer(progress, "mined", 0, requested); }
+            complete = bool(progress, "complete");
+            if (status.equals("completed")) {
+                int success = type.equals("mine") ? mined : acquired;
+                if (!complete || success != requested) { throw new IllegalArgumentException("Completed invariant"); }
+            }
+        }
+        public String identity() { return TerminalDeliveryState.identity(daemonEpoch, session, skillInstanceId, terminalId); }
+        public String renderFallback() {
+            return TerminalPresentation.renderFallback(type, target, status, reason, requested, acquired, mined, complete);
+        }
+    }
+
+    /** Parses a /v2/terminal-events response into events (empty when the array is absent). */
+    public static List<TerminalEvent> terminalEvents(JsonObject response) {
+        keys(response, "version", "daemonEpoch", "session", "events", "hasMore", "overflow");
+        integer(response, "version", 2, 2);
+        List<TerminalEvent> result = new ArrayList<TerminalEvent>();
+        JsonElement events = response.get("events");
+        if (events != null && events.isJsonArray()) {
+            for (JsonElement entry : events.getAsJsonArray()) {
+                result.add(new TerminalEvent(entry.getAsJsonObject()));
+            }
+        }
+        return result;
+    }
 }

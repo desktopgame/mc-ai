@@ -10,13 +10,16 @@ from state_cache import StateCache, SyncError
 from goals import GoalManager
 from skills import SkillManager
 from execution_registry import ExecutionRegistry
-from skill_protocol import SkillRequestError, SkillSyncError, SkillBusyError
+from terminal_events import TerminalEventStore, TerminalError
+from skill_protocol import (SkillRequestError, SkillSyncError, SkillBusyError,
+                            validate_terminal_query, validate_present_request, validate_delivery_request)
 from context_budget import BudgetExceeded
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
 MAX_BODY = 32768
-V2_PATHS = ("/v2/execution/open", "/v2/goal", "/v2/action-result", "/v2/skill-status")
+V2_PATHS = ("/v2/execution/open", "/v2/goal", "/v2/action-result", "/v2/skill-status",
+            "/v2/terminal-events", "/v2/social/skill-terminal", "/v2/social/terminal-delivery")
 
 
 def turn(payload, brain=None):
@@ -141,8 +144,44 @@ class Handler(BaseHTTPRequestHandler):
                     response = skill_manager.update(payload)
                 elif self.path == "/v2/action-result":
                     response = skill_manager.result(payload)
-                else:
+                elif self.path == "/v2/skill-status":
                     response = skill_manager.status(payload)
+                elif self.path == "/v2/terminal-events":
+                    store = getattr(self.server, "terminals", None)
+                    query = validate_terminal_query(payload)
+                    if store is None:
+                        raise SkillSyncError("skills_not_configured")
+                    if query["daemonEpoch"] != self.server.registry.epoch:
+                        raise SkillSyncError("daemon_restarted")
+                    page = store.snapshot(query["daemonEpoch"], query["session"], query["afterSequence"])
+                    response = {"version": 2, "daemonEpoch": query["daemonEpoch"], "session": query["session"],
+                                "events": page["events"], "hasMore": page["hasMore"], "overflow": page["overflow"]}
+                elif self.path == "/v2/social/skill-terminal":
+                    store = getattr(self.server, "terminals", None)
+                    present = validate_present_request(payload)
+                    if store is None:
+                        raise SkillSyncError("skills_not_configured")
+                    if present["daemonEpoch"] != self.server.registry.epoch:
+                        raise SkillSyncError("daemon_restarted")
+                    result = store.present(present["daemonEpoch"], present["session"], present["skillInstanceId"],
+                                           present["terminalId"], present["conversationSession"], present["player"],
+                                           present["deliveryId"])
+                    response = {"version": 2, "daemonEpoch": present["daemonEpoch"], "session": present["session"],
+                                "skillInstanceId": present["skillInstanceId"], "terminalId": present["terminalId"],
+                                "deliveryId": present["deliveryId"], **result}
+                else:
+                    store = getattr(self.server, "terminals", None)
+                    delivery = validate_delivery_request(payload)
+                    if store is None:
+                        raise SkillSyncError("skills_not_configured")
+                    if delivery["daemonEpoch"] != self.server.registry.epoch:
+                        raise SkillSyncError("daemon_restarted")
+                    store.deliver(delivery["daemonEpoch"], delivery["session"], delivery["skillInstanceId"],
+                                  delivery["terminalId"], delivery["conversationSession"], delivery["player"],
+                                  delivery["deliveryId"], delivery["outcome"], delivery["variantId"])
+                    response = {"version": 2, "daemonEpoch": delivery["daemonEpoch"], "session": delivery["session"],
+                                "skillInstanceId": delivery["skillInstanceId"], "terminalId": delivery["terminalId"],
+                                "deliveryId": delivery["deliveryId"], "accepted": True}
                 LOG.info("skill endpoint=%s revision=%s status=%s", self.path,
                          payload.get("goalRevision"), response.get("status", "accepted"))
             elif self.path in ("/v1/goal", "/v1/action-result"):
@@ -184,6 +223,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         except SkillBusyError as exc:
             self.error_v2(503, exc.code)
+            return
+        except TerminalError as exc:
+            status = 410 if exc.code == "terminal_gone" else 404 if exc.code == "unknown_terminal" else 409
+            self.error_v2(status, exc.code)
             return
         except SyncError as exc:
             self.error(409, str(exc))
@@ -241,7 +284,8 @@ def main():
         server.states = StateCache()
         server.goals = GoalManager(server.states, decisions)
         server.registry = ExecutionRegistry()
-        server.skills = SkillManager(server.states, server.registry)
+        server.terminals = TerminalEventStore()
+        server.skills = SkillManager(server.states, server.registry, terminal_store=server.terminals)
         server.shutdown_token = args.shutdown_token
         stop = threading.Event()
         ticker = threading.Thread(target=_tick_loop, args=(server.skills, stop), daemon=True, name="mcai-skills")

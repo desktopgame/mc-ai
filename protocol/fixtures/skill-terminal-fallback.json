@@ -1,0 +1,104 @@
+{
+  "description": "Shared fixed-renderer contract. Python terminal_presentation.render_fallback and Java TerminalPresentation.renderFallback must both reproduce every `fallback` string exactly.",
+  "cases": [
+    {
+      "id": "collect_drop_completed",
+      "type": "collect_drop",
+      "target": {"item": "minecraft:log"},
+      "status": "completed",
+      "reason": "completed",
+      "progress": {"requested": 5, "acquired": 5, "complete": true},
+      "fallback": "原木回収: 完了。原木を5/5個回収。"
+    },
+    {
+      "id": "collect_drop_failed",
+      "type": "collect_drop",
+      "target": {"item": "minecraft:log"},
+      "status": "failed",
+      "reason": "no_item_in_range",
+      "progress": {"requested": 5, "acquired": 0, "complete": true},
+      "fallback": "原木回収: 失敗[no_item_in_range]。回収0/5個。今回確認した範囲で対象を確認できませんでした。"
+    },
+    {
+      "id": "collect_drop_cancelled",
+      "type": "collect_drop",
+      "target": {"item": "minecraft:log"},
+      "status": "cancelled",
+      "reason": "stopped",
+      "progress": {"requested": 5, "acquired": 2, "complete": true},
+      "fallback": "原木回収: 取消[stopped]。回収2/5個。"
+    },
+    {
+      "id": "mine_completed",
+      "type": "mine",
+      "target": {"block": "minecraft:log"},
+      "status": "completed",
+      "reason": "completed",
+      "progress": {"requested": 1, "mined": 1, "complete": true},
+      "fallback": "原木採掘: 完了。原木を1/1ブロック採掘。"
+    },
+    {
+      "id": "mine_failed",
+      "type": "mine",
+      "target": {"block": "minecraft:log"},
+      "status": "failed",
+      "reason": "no_block_in_range",
+      "progress": {"requested": 1, "mined": 0, "complete": true},
+      "fallback": "原木採掘: 失敗[no_block_in_range]。採掘0/1ブロック。今回確認した範囲で対象を確認できませんでした。"
+    },
+    {
+      "id": "mine_cancelled_partial",
+      "type": "mine",
+      "target": {"block": "minecraft:log"},
+      "status": "cancelled",
+      "reason": "replaced",
+      "progress": {"requested": 1, "mined": 0, "complete": false},
+      "fallback": "原木採掘: 取消[replaced]。確定分は採掘0/1ブロック。未確定の操作があります。"
+    },
+    {
+      "id": "collect_block_completed",
+      "type": "collect_block",
+      "target": {"block": "minecraft:log"},
+      "status": "completed",
+      "reason": "completed",
+      "progress": {"requested": 5, "acquired": 5, "mined": 3, "complete": true},
+      "fallback": "原木回収: 完了。原木を5/5個回収、採掘3ブロック。"
+    },
+    {
+      "id": "collect_block_failed",
+      "type": "collect_block",
+      "target": {"block": "minecraft:log"},
+      "status": "failed",
+      "reason": "drop_unavailable",
+      "progress": {"requested": 5, "acquired": 2, "mined": 3, "complete": true},
+      "fallback": "原木回収: 失敗[drop_unavailable]。回収2/5個、採掘3ブロック。確認した範囲で回収対象を見つけられませんでした。"
+    },
+    {
+      "id": "collect_block_cancelled",
+      "type": "collect_block",
+      "target": {"block": "minecraft:log"},
+      "status": "cancelled",
+      "reason": "stopped",
+      "progress": {"requested": 5, "acquired": 2, "mined": 1, "complete": true},
+      "fallback": "原木回収: 取消[stopped]。回収2/5個、採掘1ブロック。"
+    },
+    {
+      "id": "collect_block_cancelled_partial",
+      "type": "collect_block",
+      "target": {"block": "minecraft:log"},
+      "status": "cancelled",
+      "reason": "replaced",
+      "progress": {"requested": 5, "acquired": 2, "mined": 1, "complete": false},
+      "fallback": "原木回収: 取消[replaced]。確定分は回収2/5個、採掘1ブロック。未確定の操作があります。"
+    },
+    {
+      "id": "collect_block_failed_unknown_reason",
+      "type": "collect_block",
+      "target": {"block": "minecraft:log"},
+      "status": "failed",
+      "reason": "mystery_reason",
+      "progress": {"requested": 5, "acquired": 2, "mined": 1, "complete": true},
+      "fallback": "原木回収: 失敗[mystery_reason]。回収2/5個、採掘1ブロック。終了理由: mystery_reason。"
+    }
+  ]
+}

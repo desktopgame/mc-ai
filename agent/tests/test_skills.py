@@ -507,7 +507,8 @@ class SkillTests(unittest.TestCase):
         try:
             status, opened = post("/v2/execution/open", {"version": 2, "session": "world"})
             self.assertEqual(status, 200)
-            self.assertEqual(opened["capabilities"], ["collect_drop_v1", "mine_v1", "collect_block_v1"])
+            self.assertEqual(opened["capabilities"],
+                             ["collect_drop_v1", "mine_v1", "collect_block_v1", "skill_terminal_social_v1"])
             status, view = post("/v2/goal", goal(1, count=2, epoch=opened["daemonEpoch"]))
             self.assertEqual(status, 200)
             self.assertEqual(view["action"]["type"], "pickup_target")

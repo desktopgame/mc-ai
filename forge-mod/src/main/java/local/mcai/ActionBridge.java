@@ -45,6 +45,20 @@ public final class ActionBridge {
     private String skillCapability, lastIssuedField, lastIssuedName;
     private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence, lastIssuedMaxCount;
     private Set<String> skillCapabilities = java.util.Collections.emptySet();
+    // Terminal social delivery: independent of the current Skill lifecycle. Only used when the
+    // Daemon advertises `skill_terminal_social_v1`; otherwise the old fixed display path is kept.
+    private final TerminalDeliveryState deliveries = new TerminalDeliveryState();
+    private boolean terminalCapable, terminalInFlight;
+    private int terminalCursor;
+    private String terminalEpoch;
+    private long nextTerminalPoll;
+    private volatile TerminalReply terminalReply;
+    private static final long TERMINAL_WINDOW_NANOS = 12000000000L;
+
+    private static final class TerminalReply {
+        final JsonObject response; final long received;
+        TerminalReply(JsonObject response) { this.response = response; received = System.nanoTime(); }
+    }
     private long claimedDeadline;
     private JsonObject skillGoal, pendingSkillResult;
     // Each in-flight v2 request owns its completion, so a stale worker can never erase a newer
@@ -97,6 +111,7 @@ public final class ActionBridge {
                 else { LogManager.getLogger(CompanionMod.MOD_ID).warn("Old goal revocation could not be queued"); }
             }
             state.reset(session); intentOrder.reset(); sentRevision = -1; nextPoll = 0;
+            terminalEpoch = null; terminalCapable = false; terminalReply = null; terminalInFlight = false;
             owner = player; expectedCompanion = null;
         }
     }
@@ -379,6 +394,8 @@ public final class ActionBridge {
                         failSkill("unsupported_goal");
                         return;
                     }
+                    terminalCapable = skillCapabilities.contains(SkillProtocol.TERMINAL_CAPABILITY);
+                    terminalEpoch = skillEpoch;
                 }
             } else if (open.expired(now, REQUEST_TIMEOUT_NANOS)) {
                 openCall = null;   // lost completion: abandon so a fresh open can be sent
@@ -534,7 +551,11 @@ public final class ActionBridge {
     private void finishSkill(SkillProtocol.Skill skill) {
         String status = skill.resultStatus, reason = skill.resultReason;
         boolean collectBlock = "collect_block".equals(skill.type);
-        if ("completed".equals(status)) {
+        if (terminalCapable) {
+            // A new-capability Daemon: the terminal outbox dispatcher owns the final display, so
+            // release the execution state now and let terminalTick show the result exactly once.
+            debugReply("作業結果の通知を準備しています。");
+        } else if ("completed".equals(status)) {
             if (collectBlock) {
                 reply(skill.name + "を" + skill.acquired + "個集めました（採掘" + skill.mined + "ブロック）。");
             } else if ("block".equals(skillField)) {
@@ -602,6 +623,52 @@ public final class ActionBridge {
         int count = payload.get("count").getAsInt();
         skillState.complete(status, reason, count);
         claimedActionId = null; claimedItem = null; claimedField = null;
+    }
+
+    /**
+     * Terminal outbox dispatcher. Independent of the current Skill: it reads finalized terminal
+     * events from the Daemon and displays each identity exactly once through TerminalDeliveryState.
+     * Runs even when no Skill is active so a cancelled/replaced Skill's late terminal is still shown.
+     */
+    private void terminalTick() {
+        if (!terminalCapable || owner == null || state.session == null || terminalEpoch == null) { return; }
+        long now = System.nanoTime();
+        TerminalReply reply = terminalReply;
+        if (reply != null) {
+            terminalReply = null; terminalInFlight = false;
+            if (reply.response != null) {
+                try {
+                    for (SkillProtocol.TerminalEvent event : SkillProtocol.terminalEvents(reply.response)) {
+                        if (!event.daemonEpoch.equals(terminalEpoch) || !event.session.equals(state.session)) { continue; }
+                        if (deliveries.accept(event.identity(), event.renderFallback(), now, TERMINAL_WINDOW_NANOS)) {
+                            String text = deliveries.finishFallback(event.identity());
+                            if (text != null) { reply(text); }
+                        }
+                        if (event.eventSequence > terminalCursor) { terminalCursor = event.eventSequence; }
+                    }
+                } catch (RuntimeException e) {
+                    LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected terminal events ({})", e.getClass().getSimpleName());
+                }
+            }
+        }
+        for (String text : deliveries.fallbackExpired(now)) { reply(text); }
+        if (!terminalInFlight && now >= nextTerminalPoll) { startTerminalFetch(); }
+    }
+
+    private void startTerminalFetch() {
+        final JsonObject body = new JsonObject();
+        body.addProperty("version", 2); body.addProperty("daemonEpoch", terminalEpoch);
+        body.addProperty("session", state.session); body.addProperty("afterSequence", terminalCursor);
+        terminalInFlight = true; nextTerminalPoll = System.nanoTime() + 1000000000L;
+        boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
+            @Override public void run() {
+                JsonObject response = null;
+                try { response = client.post("/v2/terminal-events", body); }
+                catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal events unavailable ({})", e.getClass().getSimpleName()); }
+                finally { terminalReply = new TerminalReply(response); }
+            }
+        });
+        if (!accepted) { terminalReply = new TerminalReply(null); }
     }
 
     private EntityItem findTarget(CompanionEntity companion, String targetRef, String item) {
@@ -719,6 +786,7 @@ public final class ActionBridge {
         List players = server == null ? null : server.getConfigurationManager().playerEntityList;
         synchronize(players != null && players.size() == 1 ? (EntityPlayerMP) players.get(0) : null);
         flushPendingSkillResult();
+        terminalTick();
         if (skillActive) {
             skillTick();
             displayState = state.status.equals("thinking") ? "thinking" : state.status.equals("running") ? "running" : "idle";

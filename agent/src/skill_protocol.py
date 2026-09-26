@@ -2,6 +2,7 @@
 import re
 
 from state_cache import identity
+from terminal_presentation import DESCRIPTORS
 
 SUPPORTED_ITEMS = ("minecraft:log", "minecraft:cobblestone", "minecraft:iron_ingot",
                    "minecraft:planks", "minecraft:stick")
@@ -9,7 +10,7 @@ SUPPORTED_BLOCKS = ("minecraft:log", "minecraft:log2", "minecraft:cobblestone", 
                     "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
                     "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel")
 LEGACY_GOALS = ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")  # v1 /goal only
-CAPABILITIES = ("collect_drop_v1", "mine_v1", "collect_block_v1")
+CAPABILITIES = ("collect_drop_v1", "mine_v1", "collect_block_v1", "skill_terminal_social_v1")
 
 # collect_block MVP: the block -> collected item mapping is an explicit table, not a name convention.
 COLLECT_BLOCK_TARGETS = {"minecraft:log": {"block": "minecraft:log", "item": "minecraft:log"}}
@@ -232,3 +233,113 @@ def validate_status(data):
     _version(data, 2)
     return {"version": 2, "session": identity(data["session"]),
             "daemonEpoch": identity(data["daemonEpoch"]), "skillInstanceId": identity(data["skillInstanceId"])}
+
+
+# ---- terminal events / social delivery ----------------------------------
+TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _progress_count(value, minimum, maximum):
+    if type(value) is not int or type(value) is bool or not minimum <= value <= maximum:
+        raise SkillRequestError("invalid_request")
+    return value
+
+
+def _terminal_progress(progress, type_):
+    if not isinstance(progress, dict):
+        raise SkillRequestError("invalid_request")
+    keys = DESCRIPTORS[type_]["metrics"]
+    if type_ == "collect_block":
+        expected = {"requested", "acquired", "mined", "complete"}
+    else:
+        expected = {"requested", keys[0][0], "complete"}
+    if set(progress) != expected:
+        raise SkillRequestError("invalid_request")
+    requested = _progress_count(progress["requested"], 1, 64)
+    result = {"requested": requested}
+    for key, _label, _unit in keys:
+        value = _progress_count(progress[key], 0, requested)
+        result[key] = value
+    if type(progress["complete"]) is not bool:
+        raise SkillRequestError("invalid_request")
+    result["complete"] = progress["complete"]
+    return result
+
+
+def validate_terminal_event(data):
+    _keys(data, {"version", "category", "terminalId", "eventSequence", "daemonEpoch", "session",
+                 "goalRevision", "skillInstanceId", "type", "status", "reason", "target", "progress"})
+    _version(data, 2)
+    if data["category"] != "skill_terminal":
+        raise SkillRequestError("invalid_request")
+    type_ = data["type"]
+    if type_ not in DESCRIPTORS:
+        raise SkillRequestError("unsupported_skill")
+    status = data["status"]
+    if type(status) is not str or status not in TERMINAL_STATUSES:
+        raise SkillRequestError("invalid_request")
+    reason = data["reason"]
+    if type(reason) is not str or not ITEM_NAME.fullmatch(reason):
+        raise SkillRequestError("invalid_request")
+    seq = data["eventSequence"]
+    if type(seq) is not int or type(seq) is bool or seq < 1:
+        raise SkillRequestError("invalid_request")
+    field = DESCRIPTORS[type_]["field"]
+    target = data["target"]
+    if not isinstance(target, dict) or set(target) != {field} or not isinstance(target[field], str) \
+            or not ITEM_NAME.fullmatch(target[field]):
+        raise SkillRequestError("invalid_request")
+    progress = _terminal_progress(data["progress"], type_)
+    if status == "completed":
+        result_key = DESCRIPTORS[type_]["metrics"][0][0]
+        if not progress["complete"] or progress[result_key] != progress["requested"]:
+            raise SkillRequestError("invalid_request")
+    return {"version": 2, "category": "skill_terminal", "terminalId": identity(data["terminalId"]),
+            "eventSequence": seq, "daemonEpoch": identity(data["daemonEpoch"]),
+            "session": identity(data["session"]), "goalRevision": revision(data["goalRevision"]),
+            "skillInstanceId": identity(data["skillInstanceId"]), "type": type_, "status": status,
+            "reason": reason, "target": {field: target[field]}, "progress": progress}
+
+
+def validate_terminal_query(data):
+    allowed = {"version", "daemonEpoch", "session"}
+    if "afterSequence" in data:
+        allowed = allowed | {"afterSequence"}
+    _keys(data, allowed)
+    _version(data, 2)
+    after = data.get("afterSequence")
+    if after is not None and (type(after) is not int or type(after) is bool or after < 0):
+        raise SkillRequestError("invalid_request")
+    return {"version": 2, "daemonEpoch": identity(data["daemonEpoch"]),
+            "session": identity(data["session"]), "afterSequence": after}
+
+
+def _delivery_binding(data):
+    return {"daemonEpoch": identity(data["daemonEpoch"]), "session": identity(data["session"]),
+            "skillInstanceId": identity(data["skillInstanceId"]), "terminalId": identity(data["terminalId"]),
+            "conversationSession": identity(data["conversationSession"]), "player": identity(data["player"]),
+            "deliveryId": identity(data["deliveryId"])}
+
+
+def validate_present_request(data):
+    _keys(data, {"version", "daemonEpoch", "session", "skillInstanceId", "terminalId",
+                 "conversationSession", "player", "deliveryId"})
+    _version(data, 2)
+    return {"version": 2, **_delivery_binding(data)}
+
+
+def validate_delivery_request(data):
+    allowed = {"version", "daemonEpoch", "session", "skillInstanceId", "terminalId",
+               "conversationSession", "player", "deliveryId", "outcome", "variantId"}
+    _keys(data, allowed if "variantId" in data else allowed - {"variantId"})
+    _version(data, 2)
+    outcome = data["outcome"]
+    if type(outcome) is not str or outcome not in ("displayed", "suppressed"):
+        raise SkillRequestError("invalid_request")
+    variant = data.get("variantId")
+    if outcome == "displayed":
+        if type(variant) is not str or not ITEM_NAME.fullmatch(variant):
+            raise SkillRequestError("invalid_request")
+    elif variant is not None:
+        raise SkillRequestError("invalid_request")
+    return {"version": 2, "outcome": outcome, "variantId": variant, **_delivery_binding(data)}

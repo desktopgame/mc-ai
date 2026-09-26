@@ -1,7 +1,9 @@
 # Skill終端結果 → Social発話 — 実装指示書
 
-状態: **提案仕様・未実装**。2026-09-26、`develop` / `c5bdd36` を調査。
-今回は文書作成のみ。以下のAPI・クラス名は、現行と明記したもの以外は追加案である。
+状態: **Phase 1〜3 実装済み（MOD 0.0.23、実ゲーム未確認）。Phase 4〜6 は未実装。** 2026-09-26、`develop` / `c5bdd36` を調査。
+実装済み: snapshot schema/validator、PresentationDescriptor/reason辞書、Python/Java共通fixture、Daemon `TerminalEventStore`/outbox/dedupe/present-ACK台帳、`/v2/terminal-events`・`/v2/social/skill-terminal`（fallbackのみ）・`/v2/social/terminal-delivery`、Forge `TerminalDeliveryState`・`TerminalPresentation`・terminal event取得/identity検証/重複排除・固定fallback一度表示・`skill_terminal_social_v1` capability gate・旧Daemon互換。
+未実装（Phase 4〜6）: typed `ConversationQueue`、通常会話との順序、LLM候補選択、delivery ACKによる会話履歴登録、forget/退出/timeout fence、Forgeからのpresent/ACK送出。詳細は HANDOFF を参照。
+以下のAPI・クラス名は、現行と明記したもの以外は追加案である。
 既存契約: [Skill Layer](skill-layer.md)、[collect_block](collect-block.md)、[行動ライフサイクル](action-lifecycle.md)、[Agent README](../agent/README.md)。
 
 ## 1. 目的と推奨案
