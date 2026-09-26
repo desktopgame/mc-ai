@@ -2,16 +2,21 @@
 import argparse
 import json
 import logging
+import threading
 from pathlib import Path
 from social import LocalSocialProvider, SocialBrain, SocialError, DEFAULT_PERSONA
 from decision import DecisionService, MockDecisionProvider, LocalDecisionProvider, DecisionError
 from state_cache import StateCache, SyncError
 from goals import GoalManager
+from skills import SkillManager
+from execution_registry import ExecutionRegistry
+from skill_protocol import SkillRequestError, SkillSyncError, SkillBusyError
 from context_budget import BudgetExceeded
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG = logging.getLogger("mcai")
 MAX_BODY = 32768
+V2_PATHS = ("/v2/execution/open", "/v2/goal", "/v2/action-result", "/v2/skill-status")
 
 
 def turn(payload, brain=None):
@@ -77,8 +82,12 @@ class Handler(BaseHTTPRequestHandler):
     def error(self, status, code):
         self.respond(status, {"version": 1, "error": code})
 
+    def error_v2(self, status, code):
+        self.respond(status, {"version": 2, "error": code})
+
     def do_POST(self):
-        if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state", "/v1/goal", "/v1/action-result"):
+        if self.path not in ("/v1/turn", "/v1/decision", "/v1/snapshot", "/v1/events", "/v1/state", "/v1/goal", "/v1/action-result") \
+                and self.path not in V2_PATHS:
             self.error(404, "not_found")
             return
         if self.headers.get_content_type() != "application/json":
@@ -101,7 +110,21 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError("incomplete_body")
             payload = json.loads(raw.decode("utf-8"))
-            if self.path in ("/v1/goal", "/v1/action-result"):
+            skill_manager = getattr(self.server, "skills", None)
+            if self.path in V2_PATHS:
+                if skill_manager is None:
+                    raise SkillSyncError("skills_not_configured")
+                if self.path == "/v2/execution/open":
+                    response = skill_manager.open(payload)
+                elif self.path == "/v2/goal":
+                    response = skill_manager.update(payload)
+                elif self.path == "/v2/action-result":
+                    response = skill_manager.result(payload)
+                else:
+                    response = skill_manager.status(payload)
+                LOG.info("skill endpoint=%s revision=%s status=%s", self.path,
+                         payload.get("goalRevision"), response.get("status", "accepted"))
+            elif self.path in ("/v1/goal", "/v1/action-result"):
                 manager = getattr(self.server, "goals", None)
                 if manager is None: raise DecisionError("goals_not_configured")
                 response = manager.update(payload) if self.path == "/v1/goal" else manager.result(payload)
@@ -131,6 +154,15 @@ class Handler(BaseHTTPRequestHandler):
         except BudgetExceeded as exc:
             LOG.warning("context budget rejected code=%s", str(exc))
             self.error(422, str(exc))
+            return
+        except SkillRequestError as exc:
+            self.error_v2(400, exc.code)
+            return
+        except SkillSyncError as exc:
+            self.error_v2(409, exc.code)
+            return
+        except SkillBusyError as exc:
+            self.error_v2(503, exc.code)
             return
         except SyncError as exc:
             self.error(409, str(exc))
@@ -186,11 +218,27 @@ def main():
         server.decisions = decisions
         server.states = StateCache()
         server.goals = GoalManager(server.states, decisions)
-        LOG.info("Agent Daemon listening on %s:%d (protocol 1, social=%s)", args.host, args.port, brain is not None)
+        server.registry = ExecutionRegistry()
+        server.skills = SkillManager(server.states, server.registry, goals=server.goals)
+        stop = threading.Event()
+        ticker = threading.Thread(target=_tick_loop, args=(server.skills, stop), daemon=True, name="mcai-skills")
+        ticker.start()
+        LOG.info("Agent Daemon listening on %s:%d (protocol 1+2, social=%s)", args.host, args.port, brain is not None)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
+        finally:
+            stop.set()
+            ticker.join(1)
+
+
+def _tick_loop(skills, stop):
+    while not stop.wait(0.1):
+        try:
+            skills.tick()
+        except Exception as exc:  # A broken tick must never stop the daemon or its HTTP threads.
+            LOG.error("skill tick failure type=%s", type(exc).__name__)
 
 
 if __name__ == "__main__":

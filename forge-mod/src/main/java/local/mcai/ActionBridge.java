@@ -3,7 +3,10 @@ package local.mcai;
 import com.google.gson.*;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
+import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.ChatComponentText;
 import net.minecraftforge.event.ServerChatEvent;
@@ -30,6 +33,12 @@ public final class ActionBridge {
     private volatile ResultCompletion resultCompletion;
     private volatile String displayState = "idle";
     private final ArrayDeque<ResultJob> results = new ArrayDeque<ResultJob>();
+    // v2 Skill dialogue. Kept separate from the legacy GoalState so a Skill never claims a legacy action.
+    private final SkillExecutionState skillState = new SkillExecutionState();
+    private boolean skillActive, skillCancelPending, skillInFlight, openInFlight, openDone, skillDone;
+    private String skillEpoch, skillItem, claimedActionId, claimedItem, lastIssuedActionId;
+    private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
+    private volatile JsonObject openResponse, skillResponse;
 
     private static final class Completion {
         final String session; final int revision; final JsonObject response; final long received;
@@ -64,6 +73,7 @@ public final class ActionBridge {
         String session = player == null ? null : observations.actionSession(player);
         if (owner != player || !Objects.equals(state.session, session)) {
             cancelActive("disconnected");
+            closeSkill("disconnected", false);
             if (state.session != null && state.goal != null && state.revision < Integer.MAX_VALUE) {
                 JsonObject cancel = envelope(state.session, state.revision + 1); cancel.add("goal", JsonNull.INSTANCE);
                 if (results.size() < 64) { results.add(new ResultJob(cancel, "/v1/goal")); }
@@ -76,7 +86,9 @@ public final class ActionBridge {
 
     /** Manual actions invalidate AI work immediately, even when the daemon is unavailable. */
     public void manualOverride(EntityPlayerMP player) {
-        synchronize(player); intentOrder.manual(); cancelActive("replaced"); state.replace(null); nextPoll = 0;
+        synchronize(player); intentOrder.manual(); cancelActive("replaced");
+        closeSkill("replaced", true);
+        state.replace(null); nextPoll = 0;
     }
 
     public IntentOrder.Ticket captureIntent(EntityPlayerMP player) {
@@ -98,9 +110,18 @@ public final class ActionBridge {
         event.setCanceled(true);
         synchronize(event.player);
         String[] parts = message.split("\\s+");
+        if (parts.length == 5 && parts[2].equals("collect_drop")) {
+            int count;
+            try { count = Integer.parseInt(parts[4]); } catch (NumberFormatException error) { reply("使い方: !agent do collect_drop <アイテム> <個数>"); return; }
+            if (!SkillProtocol.ITEMS.contains(parts[3]) || count < 1 || count > 64) {
+                reply("使い方: !agent do collect_drop <アイテム> <個数> (1-64)"); return;
+            }
+            requestSkill(event.player, parts[3], count);
+            return;
+        }
         if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop")
                 || parts[2].equals("pickup") || parts[2].equals("deposit"))) {
-            reply("使い方: !agent do follow / look / stop / pickup / deposit"); return;
+            reply("使い方: !agent do follow / look / stop / pickup / deposit / collect_drop <アイテム> <個数>"); return;
         }
         requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner"
                 : parts[2].equals("pickup") ? "pickup_item" : parts[2].equals("deposit") ? "deposit_items" : "stop", null);
@@ -112,7 +133,7 @@ public final class ActionBridge {
                 || goal.equals("pickup_item") || goal.equals("deposit_items"))) { return false; }
         if (goal.equals("stop")) {
             // A delayed natural stop must not cancel a newer explicit action.
-            if (ticket != null) { intentOrder.accept(ticket); cancelActive("replaced"); state.replace(null); nextPoll = 0; }
+            if (ticket != null) { intentOrder.accept(ticket); cancelActive("replaced"); closeSkill("replaced", true); state.replace(null); nextPoll = 0; }
             else { manualOverride(player); }
             CompanionEntity companion = CompanionCommands.find(player);
             if (companion != null) { companion.stop(); }
@@ -126,12 +147,273 @@ public final class ActionBridge {
         }
         if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
         if (ticket == null) { intentOrder.manual(); } else { intentOrder.accept(ticket); }
-        cancelActive("replaced"); companion.stop();
+        cancelActive("replaced"); closeSkill("replaced", false); companion.stop();
         state.replace(goal);
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         deadline = System.nanoTime() + 60000000000L; nextPoll = 0;
         debugReply("新しい指示を受け付けました。判断を待っています。");
         return true;
+    }
+
+    // ---- v2 Skill: collect_drop -----------------------------------------
+    private boolean requestSkill(EntityPlayerMP player, String item, int count) {
+        synchronize(player);
+        MinecraftServer server = MinecraftServer.getServer();
+        CompanionEntity companion = CompanionCommands.find(player);
+        if (server.getConfigurationManager().playerEntityList.size() != 1 || !player.isEntityAlive()
+                || state.session == null || companion == null || companion.worldObj != player.worldObj) {
+            reply("Companionと観測の同期を確認してください。ワールド内で数秒待ってから試せます。"); return false;
+        }
+        if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
+        cancelActive("replaced"); closeSkill("replaced", false); intentOrder.manual();
+        companion.stop(); active = null;
+        state.replace("collect_drop");
+        skillState.reset(state.session); skillState.revision = state.revision;
+        skillActive = true; skillCancelPending = false; skillEpoch = null;
+        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+        skillItem = item; skillCount = count;
+        expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
+        nextPoll = 0;
+        debugReply("新しい指示を受け付けました。判断を待っています。");
+        return true;
+    }
+
+    private JsonObject skillEnvelope() {
+        JsonObject body = new JsonObject();
+        body.addProperty("version", 2);
+        body.addProperty("session", state.session);
+        body.addProperty("daemonEpoch", skillEpoch);
+        body.addProperty("goalRevision", state.revision);
+        return body;
+    }
+
+    private JsonObject skillGoalObject() {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("type", "collect_drop");
+        JsonObject target = new JsonObject();
+        target.addProperty("item", skillItem);
+        goal.add("target", target);
+        goal.addProperty("count", skillCount);
+        goal.add("constraints", new JsonArray());
+        return goal;
+    }
+
+    /** Stops local Skill execution. notifyNull leaves one poll to tell the daemon the goal is null. */
+    private void closeSkill(String reason, boolean notifyNull) {
+        if (!skillActive) { return; }
+        if (skillEpoch != null && skillState.skillInstanceId != null) {
+            if (claimedActionId != null && !skillState.known(claimedActionId)) {
+                enqueueSkillResult(claimedActionId, claimedSequence, "cancelled", reason, 0, claimedItem);
+            } else if (lastIssuedActionId != null && !skillState.known(lastIssuedActionId)) {
+                enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, 0, skillItem);
+            }
+        }
+        if (active != null) { active.stop(); active = null; }
+        claimedActionId = null; claimedItem = null;
+        if (notifyNull && skillEpoch != null && state.session != null) {
+            skillCancelPending = true;
+        } else {
+            skillActive = false; skillCancelPending = false; skillEpoch = null; lastIssuedActionId = null;
+        }
+    }
+
+    private void enqueueSkillResult(String actionId, int sequence, String status, String reason, int count, String item) {
+        if (state.session == null || skillEpoch == null || skillState.skillInstanceId == null || item == null) { return; }
+        JsonObject body = skillEnvelope();
+        body.addProperty("skillInstanceId", skillState.skillInstanceId);
+        body.addProperty("actionId", actionId);
+        body.addProperty("actionSequence", sequence);
+        body.addProperty("status", status);
+        body.addProperty("reason", reason);
+        JsonObject acquired = new JsonObject();
+        acquired.addProperty("item", item); acquired.addProperty("count", count);
+        body.add("acquired", acquired);
+        if (results.size() >= 64) {
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill result queue full; notification lost");
+            return;
+        }
+        results.add(new ResultJob(body, "/v2/action-result"));
+    }
+
+    private void startSkillOpen() {
+        final String session = state.session;
+        final JsonObject body = new JsonObject();
+        body.addProperty("version", 2); body.addProperty("session", session);
+        openInFlight = true; openDone = false; nextPoll = System.nanoTime() + 1000000000L;
+        boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
+            @Override public void run() {
+                JsonObject response = null;
+                try { response = client.post("/v2/execution/open", body); }
+                catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open unavailable ({})", e.getClass().getSimpleName()); }
+                finally { openResponse = response; openDone = true; }
+            }
+        });
+        if (!accepted) {
+            openResponse = null; openDone = true;
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open executor rejected request");
+        }
+    }
+
+    private void startSkillGoal(final JsonObject goal) {
+        final JsonObject body = skillEnvelope();
+        body.add("goal", goal == null ? JsonNull.INSTANCE : goal);
+        skillInFlight = true; skillDone = false; nextPoll = System.nanoTime() + 1000000000L;
+        boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
+            @Override public void run() {
+                JsonObject response = null;
+                try { response = client.post("/v2/goal", body); }
+                catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control unavailable ({})", e.getClass().getSimpleName()); }
+                finally { skillResponse = response; skillDone = true; }
+            }
+        });
+        if (!accepted) {
+            skillResponse = null; skillDone = true;
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control executor rejected request");
+        }
+    }
+
+    private void skillTick() {
+        if (owner == null || state.session == null) { closeSkill("disconnected", false); return; }
+        long now = System.nanoTime();
+        if (claimedActionId != null && active != null) {
+            if (!active.isEntityAlive() || !owner.isEntityAlive() || active.worldObj != owner.worldObj) {
+                finishSkillAction("failed", "companion_unavailable", 0);
+            } else if (active.getHealth() <= 6 || active.getDistanceSqToEntity(owner) > 1024) {
+                active.stop(); finishSkillAction("failed", "unsafe_state", 0);
+            } else if (active.pickupResolved()) {
+                int stored = Math.min(active.lastPickupStored(), claimedMaxCount);
+                String outcome = active.pickupOutcome();
+                if (stored > 0) { finishSkillAction("succeeded", outcome == null || outcome.isEmpty() ? "completed" : outcome, stored); }
+                else { finishSkillAction("failed", outcome == null || outcome.isEmpty() ? "inventory_full" : outcome, 0); }
+            } else if (active.lastResult().equals("path_not_found")) {
+                active.stop(); finishSkillAction("failed", "path_not_found", 0);
+            }
+        }
+        if (openDone) {
+            openDone = false; openInFlight = false;
+            JsonObject response = openResponse; openResponse = null;
+            if (response == null) { failSkill("disconnected"); return; }
+            try {
+                if (!ActionProtocol.integer(response, "version", 2)
+                        || !ActionProtocol.string(response, "session").equals(state.session)) {
+                    throw new IllegalArgumentException("bad open response");
+                }
+                skillEpoch = ActionProtocol.string(response, "daemonEpoch");
+            } catch (RuntimeException e) { failSkill("disconnected"); return; }
+        }
+        if (skillEpoch == null) {
+            if (!openInFlight && now >= nextPoll) { startSkillOpen(); }
+            return;
+        }
+        if (skillCancelPending) {
+            if (skillDone) {
+                skillDone = false; skillInFlight = false; skillResponse = null;
+                skillActive = false; skillCancelPending = false; skillEpoch = null; lastIssuedActionId = null;
+            } else if (!skillInFlight && now >= nextPoll) {
+                startSkillGoal(null);
+            }
+            return;
+        }
+        if (skillDone) {
+            skillDone = false; skillInFlight = false;
+            JsonObject response = skillResponse; skillResponse = null;
+            consumeSkill(response);
+        }
+        if (!skillActive || skillInFlight || now < nextPoll || claimedActionId != null) { return; }
+        startSkillGoal(skillGoalObject());
+    }
+
+    private void consumeSkill(JsonObject response) {
+        if (response == null) { failSkill("disconnected"); return; }
+        try {
+            SkillProtocol.validateView(response, state.session, state.revision, skillEpoch);
+            SkillProtocol.Skill skill = SkillProtocol.skill(response);
+            if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
+            if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.acquired); return; }
+            SkillProtocol.Action action = SkillProtocol.action(response);
+            if (action == null) { return; }
+            lastIssuedActionId = action.actionId; lastIssuedSequence = action.sequence;
+            if (claimedActionId != null || skillState.known(action.actionId)) { return; }
+            if (owner == null) { failSkill("owner_unavailable"); return; }
+            CompanionEntity companion = CompanionCommands.find(owner);
+            if (companion == null || !owner.isEntityAlive() || companion.worldObj != owner.worldObj
+                    || owner.dimension != action.dimension
+                    || !action.companionId.equals(companion.getUniqueID().toString())) {
+                failSkill("unsafe_state"); return;
+            }
+            EntityItem target = findTarget(companion, action.targetRef, action.item);
+            if (target == null) {
+                if (skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
+                enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", 0, action.item);
+                return;
+            }
+            if (target.delayBeforeCanPickup > 0) {
+                if (skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_not_ready", 0); }
+                enqueueSkillResult(action.actionId, action.sequence, "failed", "target_not_ready", 0, action.item);
+                return;
+            }
+            if (!skillState.claim(action.actionId, action.sequence)) { return; }
+            claimedActionId = action.actionId; claimedSequence = action.sequence;
+            claimedItem = action.item; claimedMaxCount = action.maxCount;
+            state.status = "running";
+            active = companion; companion.pickupItem(action.targetRef, action.maxCount);
+            enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", 0, action.item);
+        } catch (RuntimeException e) {
+            LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected skill view ({})", e.getClass().getSimpleName());
+            failSkill("action_failed");
+        }
+    }
+
+    private void finishSkillAction(String status, String reason, int count) {
+        if (claimedActionId == null) { return; }
+        enqueueSkillResult(claimedActionId, claimedSequence, status, reason, count, claimedItem);
+        skillState.complete(status, reason, count);
+        claimedActionId = null; claimedItem = null;
+        if (active != null) { active.stop(); active = null; }
+    }
+
+    private void finishSkill(String status, String reason, int acquired) {
+        if ("completed".equals(status)) {
+            reply(skillItem + "を" + skillCount + "個集めました。");
+        } else if ("cancelled".equals(status)) {
+            debugReply("収集を取り消しました。");
+        } else {
+            reply(skillItem + "の収集を完了できませんでした（" + reason + "、" + acquired + "/" + skillCount + "個）。");
+        }
+        if (active != null) { active.stop(); active = null; }
+        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+        skillActive = false; skillCancelPending = false; skillEpoch = null;
+        state.goal = null; state.actionId = null; state.status = "idle";
+        nextPoll = 0;
+    }
+
+    private void failSkill(String reason) {
+        intentOrder.manual();
+        if (skillActive && skillEpoch != null && claimedActionId != null && !skillState.known(claimedActionId)) {
+            enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, 0, claimedItem);
+            skillState.complete("failed", reason, 0);
+        }
+        if (active != null) { active.stop(); active = null; }
+        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+        skillActive = false; skillCancelPending = false; skillEpoch = null;
+        state.goal = null; state.actionId = null; state.status = "idle";
+        nextPoll = 0;
+        debugReply("収集を完了できなかったため停止しました（" + reason + "）。");
+    }
+
+    private EntityItem findTarget(CompanionEntity companion, String targetRef, String item) {
+        String uuid = targetRef.startsWith("item-") ? targetRef.substring("item-".length()) : targetRef;
+        for (Object value : companion.worldObj.getEntitiesWithinAABB(EntityItem.class, companion.boundingBox.expand(16, 16, 16))) {
+            EntityItem entity = (EntityItem) value;
+            if (entity.isDead || !entity.getUniqueID().toString().equals(uuid)) { continue; }
+            ItemStack stack = entity.getEntityItem();
+            if (stack == null || stack.stackSize <= 0) { continue; }
+            Object name = Item.itemRegistry.getNameForObject(stack.getItem());
+            if (name == null || !name.toString().equals(item)) { continue; }
+            if (entity.getDistanceSqToEntity(companion) > CompanionEntity.ITEM_RANGE_SQUARED) { continue; }
+            return entity;
+        }
+        return null;
     }
 
     private void result(String status, String reason) {
@@ -207,6 +489,12 @@ public final class ActionBridge {
         MinecraftServer server = MinecraftServer.getServer();
         List players = server == null ? null : server.getConfigurationManager().playerEntityList;
         synchronize(players != null && players.size() == 1 ? (EntityPlayerMP) players.get(0) : null);
+        if (skillActive) {
+            skillTick();
+            displayState = state.status.equals("thinking") ? "thinking" : state.status.equals("running") ? "running" : "idle";
+            sendResults();
+            return;
+        }
         Completion done = completion;
         if (done != null) { completion = null; inFlight = false; consume(done); }
         if (state.status.equals("thinking") && System.nanoTime() > deadline) { fail("expired"); }
@@ -270,6 +558,9 @@ public final class ActionBridge {
                     if (job.path.equals("/v1/goal")) {
                         ActionProtocol.validateEnvelope(ack, job.body.get("session").getAsString(), job.body.get("goalRevision").getAsInt());
                         ok = ActionProtocol.string(ack, "status").equals("idle");
+                    } else if (job.path.equals("/v2/action-result")) {
+                        ok = ActionProtocol.integer(ack, "version", 2) && ack.has("accepted")
+                                && ack.get("accepted").toString().equals("true");
                     } else {
                         ok = ActionProtocol.integer(ack, "version", 1) && ack.has("accepted") && ack.get("accepted").toString().equals("true");
                     }

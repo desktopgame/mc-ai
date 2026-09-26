@@ -15,6 +15,7 @@ import net.minecraft.world.World;
 import org.apache.logging.log4j.LogManager;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public final class CompanionEntity extends EntityCreature {
     /** Items within this radius of the companion are observable and reachable for pickup. */
@@ -26,6 +27,12 @@ public final class CompanionEntity extends EntityCreature {
     private int lookTicks;
     private String lastResult = "none";
     private final FollowRetry pathRetry = new FollowRetry();
+    // Target-fixed Skill pickup. The stored count survives stop() until the action receipt is sent.
+    private String pickupTargetId = "";
+    private int pickupMaxCount;
+    private int pickupStored = -1;
+    private String pickupOutcome = "";
+    private boolean targetPickup;
 
     public CompanionEntity(World world) {
         super(world);
@@ -37,6 +44,7 @@ public final class CompanionEntity extends EntityCreature {
         tasks.addTask(1, new FollowTask());
         tasks.addTask(2, new PickupTask());
         tasks.addTask(3, new DepositTask());
+        tasks.addTask(4, new PickupTargetTask());
     }
 
     @Override protected void applyEntityAttributes() {
@@ -63,8 +71,23 @@ public final class CompanionEntity extends EntityCreature {
         result("stopped");
     }
     public void look() { stop(); task = "look"; lookTicks = 60; result("looking"); }
-    public void pickup() { stop(); task = "pickup"; result("picking_up"); }
+    public void pickup() { stop(); task = "pickup"; targetPickup = false; pickupStored = -1; pickupOutcome = ""; result("picking_up"); }
     public void deposit() { stop(); task = "deposit"; result("depositing"); }
+
+    /** Skill pickup: follow one fixed dropped-item UUID and store at most maxCount. */
+    public void pickupItem(String targetRef, int maxCount) {
+        stop();
+        task = "pickup";
+        targetPickup = true;
+        pickupTargetId = targetRef.startsWith("item-") ? targetRef.substring("item-".length()) : targetRef;
+        pickupMaxCount = maxCount;
+        pickupStored = -1;
+        pickupOutcome = "";
+        result("picking_up");
+    }
+    public boolean pickupResolved() { return pickupStored >= 0; }
+    public int lastPickupStored() { return pickupStored; }
+    public String pickupOutcome() { return pickupOutcome; }
 
     public int carriedCount() {
         int total = 0;
@@ -103,19 +126,36 @@ public final class CompanionEntity extends EntityCreature {
         return best;
     }
 
+    /** Finds the fixed Skill target by UUID within range, regardless of what is nearer. */
+    private EntityItem targetItem() {
+        if (pickupTargetId.isEmpty()) { return null; }
+        for (Object value : worldObj.getEntitiesWithinAABB(EntityItem.class, boundingBox.expand(16, 16, 16))) {
+            EntityItem item = (EntityItem) value;
+            if (item.isDead || !item.getUniqueID().toString().equals(pickupTargetId)) { continue; }
+            ItemStack stack = item.getEntityItem();
+            if (stack == null || stack.stackSize <= 0) { continue; }
+            if (item.getDistanceSqToEntity(this) > ITEM_RANGE_SQUARED) { continue; }
+            return item;
+        }
+        return null;
+    }
+
     /** Merges into existing stacks first, then empty slots. Returns how many items were stored. */
-    private int store(ItemStack stack) {
+    private int store(ItemStack stack) { return storeUpTo(stack, stack.stackSize); }
+
+    /** Stores at most limit items, consuming the passed stack as it merges. */
+    private int storeUpTo(ItemStack stack, int limit) {
         int stored = 0;
-        for (int i = 0; i < SLOTS && stack.stackSize > 0; i++) {
+        for (int i = 0; i < SLOTS && stored < limit && stack.stackSize > 0; i++) {
             ItemStack slot = inventory[i];
             if (slot == null || !slot.isItemEqual(stack) || !ItemStack.areItemStackTagsEqual(slot, stack)) { continue; }
-            int move = Math.min(stack.stackSize, slot.getMaxStackSize() - slot.stackSize);
+            int move = Math.min(Math.min(stack.stackSize, limit - stored), slot.getMaxStackSize() - slot.stackSize);
             if (move <= 0) { continue; }
             slot.stackSize += move; stack.stackSize -= move; stored += move;
         }
-        for (int i = 0; i < SLOTS && stack.stackSize > 0; i++) {
+        for (int i = 0; i < SLOTS && stored < limit && stack.stackSize > 0; i++) {
             if (inventory[i] != null) { continue; }
-            int move = Math.min(stack.stackSize, stack.getMaxStackSize());
+            int move = Math.min(Math.min(stack.stackSize, limit - stored), stack.getMaxStackSize());
             ItemStack slot = stack.copy(); slot.stackSize = move;
             inventory[i] = slot; stack.stackSize -= move; stored += move;
         }
@@ -146,6 +186,18 @@ public final class CompanionEntity extends EntityCreature {
         stop();
         if (stored <= 0) { result("inventory_full"); return; }
         if (remaining.stackSize <= 0) { item.setDead(); } else { item.setEntityItemStack(remaining); }
+        result("pickup_completed");
+    }
+
+    /** Collects up to pickupMaxCount from the fixed target; the outcome survives stop(). */
+    private void collectTarget(EntityItem item) {
+        ItemStack remaining = item.getEntityItem().copy();
+        int stored = storeUpTo(remaining, Math.min(pickupMaxCount, remaining.stackSize));
+        stop();
+        pickupStored = stored;
+        if (stored <= 0) { pickupOutcome = "inventory_full"; result("inventory_full"); return; }
+        if (remaining.stackSize <= 0) { item.setDead(); } else { item.setEntityItemStack(remaining); }
+        pickupOutcome = "completed";
         result("pickup_completed");
     }
 
@@ -265,7 +317,7 @@ public final class CompanionEntity extends EntityCreature {
     private final class PickupTask extends EntityAIBase {
         private int retryTicks;
         PickupTask() { setMutexBits(3); }
-        @Override public boolean shouldExecute() { return task.equals("pickup"); }
+        @Override public boolean shouldExecute() { return task.equals("pickup") && !targetPickup; }
         @Override public boolean continueExecuting() { return shouldExecute(); }
         @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
         @Override public void resetTask() { getNavigator().clearPathEntity(); }
@@ -275,6 +327,32 @@ public final class CompanionEntity extends EntityCreature {
             if (item == null) { stop(); result("no_item_in_range"); return; }
             getLookHelper().setLookPositionWithEntity(item, 30.0F, 30.0F);
             if (getDistanceSqToEntity(item) <= 2.25D) { getNavigator().clearPathEntity(); collect(item); return; }
+            if (--retryTicks <= 0) {
+                retryTicks = 20;
+                boolean found = getNavigator().tryMoveToEntityLiving(item, 1.0D);
+                boolean exhausted = pathRetry.exhausted(found);
+                result(found ? "picking_up" : exhausted ? "path_not_found" : "path_retrying");
+            }
+        }
+    }
+
+    private final class PickupTargetTask extends EntityAIBase {
+        private int retryTicks;
+        PickupTargetTask() { setMutexBits(3); }
+        @Override public boolean shouldExecute() { return task.equals("pickup") && targetPickup; }
+        @Override public boolean continueExecuting() { return shouldExecute(); }
+        @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
+        @Override public void resetTask() { getNavigator().clearPathEntity(); }
+        @Override public void updateTask() {
+            EntityItem item = targetItem();
+            if (item == null) { stop(); pickupStored = 0; pickupOutcome = "target_lost"; result("no_item_in_range"); return; }
+            getLookHelper().setLookPositionWithEntity(item, 30.0F, 30.0F);
+            if (getDistanceSqToEntity(item) <= 2.25D) {
+                getNavigator().clearPathEntity();
+                if (item.delayBeforeCanPickup > 0) { result("picking_up"); return; }
+                collectTarget(item);
+                return;
+            }
             if (--retryTicks <= 0) {
                 retryTicks = 20;
                 boolean found = getNavigator().tryMoveToEntityLiving(item, 1.0D);

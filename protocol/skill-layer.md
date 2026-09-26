@@ -1,8 +1,8 @@
 # Skill Layer MVP 実装仕様 — collect_drop
 
-状態: **実装対象の仕様。コード未実装。** 2026-09-26、調査基点 `d032115`（MOD 0.0.11）。
+状態: **MVP実装済み（MOD 0.0.12 / Daemon v2）。** 2026-09-26、調査基点 `d032115`（MOD 0.0.11）に実装。
 利用者の「Skill Layer: 実装仕様化依頼」27項目を前提とする。[元のアイデア](../mod-idea/skill.md)は背景資料、本書をMVPの実装契約とする。
-今回作成するのは仕様のみ。実装・起動・配置は行わない。既存の実装済み機能を説明する文書ではない。
+実装は `agent/src/skill_protocol.py`・`execution_registry.py`・`skills.py`、`forge-mod` の `SkillProtocol.java`・`SkillExecutionState.java` と既存クラスへの追加。自動テストはDaemon 9件・Java 4件。実ゲーム検証は未実施。
 
 ## 1. 範囲と確定した判断
 

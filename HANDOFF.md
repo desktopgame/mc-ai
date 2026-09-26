@@ -2,9 +2,10 @@
 
 ## 最初に読むもの
 
-Skill Layerの次の実装仕様は [protocol/skill-layer.md](protocol/skill-layer.md)。利用者の依頼に基づき仕様化済み、コードは未実装。
-対象は `collect_drop(item, count)`。Planner・採掘は範囲外。既存pickupの対象固定・数量制限、Skill進捗とaction台帳、取消・通信障害の扱いを定義した。
-今回の仕様化ではプロセス・jar配置を操作していない。以下の起動状態は各記録時点の情報として扱う。
+Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
+Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
+入口は `!agent do collect_drop <アイテム> <個数>` と v2 typed protocol。Planner・採掘・自然文からの引数抽出は範囲外。
+自動テストはPython 71件・Java 40件。実ゲームでの収集動作は未検証で、次回は配置・実機確認から。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -16,16 +17,16 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 
 | 項目 | 確認結果 |
 | --- | --- |
-| Git HEAD | `99d77e2` — Add: アイテムの受け渡し。作業ツリーはクリーン（本ドキュメント更新前） |
-| MODバージョン | `0.0.11`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理） |
-| Prismの有効MOD | `mc-ai-companion-0.0.11.jar`（SHA-256 `CD0AE1547C1AADEB4897993E0F5D99741263A34AA893C35AAEBCE19A7CC38447`）。他は全て `.jar.disabled` |
-| Daemon | PID `2196` が `127.0.0.1:8767` で待受。0.0.11相当の最新コード |
+| Git HEAD | `403e605` 時点からSkill Layerを実装（本ドキュメント更新前は未コミット） |
+| MODバージョン | `0.0.12`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理） |
+| Prismの有効MOD | 未反映。0.0.11のまま（0.0.12は `build/libs` に生成済み） |
+| Daemon | 未再起動。v2 Skill対応はソース上のみ |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **62件**・Java **36件**・Forgeビルド成功 |
+| 自動テスト | Python **71件**・Java **40件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映待ちはない。** MOD・Daemon・ドキュメントは同じ世代に揃っている。
+**反映待ちがある。** MOD 0.0.12 をPrismへ配置し、Daemonを再起動して、`!agent do collect_drop` を実機で確認する。
 
 ## 実装済みの機能
 
@@ -40,6 +41,9 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
   9スロットのCompanionインベントリ（ワールド保存・死亡時ドロップ）、16ブロック以内の落下物の観測（最大16件・2ブロック刻み）。
 - **所有者への受け渡し（0.0.11）**: 目的 `deposit_items` / 判断 `deposit` / 理由 `goal_deposit・inventory_empty`。
   所有者へ2ブロック以内まで近づいて所持品すべてを渡す。渡し切れなければ `owner_inventory_full` で残りを持ったままにする。
+- **Skill Layer（0.0.12 / protocol 2）**: `collect_drop(item, count)`。v2 `/v2/execution/open`・`/v2/goal`・`/v2/action-result`・`/v2/skill-status`。
+  DaemonがSkill進捗・候補選択・期限・理由を管理し、ForgeはUUIDで固定した対象だけを数量制限付きで収納する。
+  入口は `!agent do collect_drop <アイテム> <個数>`。allowlistは log/cobblestone/iron_ingot/planks/stick、count 1〜64。手動操作・新指示は旧Skillを取り消す。
 
 ### pickup / deposit の設計判断（重要）
 
@@ -74,12 +78,16 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 | 目的・判断・安全条件（MOD） | `ActionProtocol.java`、`ActionBridge.java`（`requestGoal` の許容リスト、実行直前の追加検証、完了時の理由対応） |
 | task・result → イベント種別 | `ObservationDiff.java` |
 | 手動コマンド | `DebugCommand.java`、`CompanionCommands.java` |
+| Skill（Daemon） | `agent/src/skill_protocol.py` の語彙・理由、`skills.py` の状態遷移 |
+| Skill（MOD） | `SkillProtocol.java`、`SkillExecutionState.java`、`ActionBridge.java` の `requestSkill`/`skillTick`、`CompanionEntity.pickupItem` |
+
+Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEMS` と MOD `SkillProtocol.ITEMS`）と fixture を同時に更新する。
 
 `IntentTest.everySupportedIntentIsAccepted` がDaemonの全intentをMOD側に通す回帰テストなので、intentを増やしたらここにも追加する。
 
 ## 検証状況
 
-直近の自動検証はPython **62件**・Java **36件**・Forgeビルド成功（0.0.11時点）。
+直近の自動検証はPython **71件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
 
 実ゲームで確認済み（0.0.9～0.0.11分）:
 
@@ -92,6 +100,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 
 未確認・残る制限:
 
+- Skill Layer（0.0.12）は自動テストのみ。実ゲームでの対象固定収納・部分収納・地面残量・取消・経路失敗は未検証。
 - ワールド再入場後のCompanionインベントリ保持（NBT保存は実装済み・実機未検証）。
 - 死亡時の所持品ドロップ、`inventory_full`（9スロット満杯での拾得）、`owner_inventory_full`（所有者満杯での受け渡し）。
 - 拾得・受け渡し中の経路失敗（`path_not_found`）での中断。
@@ -139,7 +148,7 @@ OpenALFix導入後も音声処理のクラッシュ記録があり、完全解�
 ```powershell
 .\scripts\forge.ps1 build                    # ビルド＋Javaテスト
 python -m unittest discover -s agent/tests   # Pythonテスト
-.\scripts\deploy-mod.ps1 -Version 0.0.11     # Prismへ配置（ゲーム起動中なら中断）
+.\scripts\deploy-mod.ps1 -Version 0.0.12     # Prismへ配置（ゲーム起動中なら中断）
 .\scripts\restart-daemon.ps1                 # Daemon入れ替え（二重起動を拒否）
 ```
 

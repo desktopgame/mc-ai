@@ -2,6 +2,25 @@
 
 Minecraft側を薄いゲームI/Oアダプタとし、AI処理を外部Agent Daemonへ分離するプロジェクト。仕様は[init.md](init.md)を参照。
 
+## Skill Layer — collect_drop（0.0.12 / protocol 2）
+
+最初のSkillとして `collect_drop(item, count)` を実装した。指定したregistry名の落下物を、このSkillのactionで新たに取得した累積数がcountに達するまで集める。
+LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typed protocol で検証できる。詳細仕様は [Skill Layer MVP](protocol/skill-layer.md) を参照。
+
+| 入力 | 動作 |
+| --- | --- |
+| `!agent do collect_drop minecraft:log 10` | v2 `/v2/execution/open` → `/v2/goal` → 対象固定のpickupを繰り返す |
+
+- 対象はForgeが実UUIDで固定し、途中で最も近い落下物へ切り替えない。1 actionで収納するのは最大 `maxCount` 個。
+- 進捗はSkillのactionで取得した累積（`acquired`）。開始前の所持品・他操作の取得・消費・受渡しでは増減しない。
+- 依頼可能itemは `minecraft:log / cobblestone / iron_ingot / planks / stick`。countは1〜64。
+- 失敗理由は `no_item_in_range / path_not_found / retry_exhausted / inventory_full / unsafe_state / stale_state / expired` 等。
+- 新しい手動操作・指示は旧Skillを取り消す。会話だけでは取り消さない。
+- 会話・Tactical・Planner・採掘は範囲外。自然文からの引数抽出も後続。
+
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.12.jar`。Daemonも同じ版へ更新する。
+2026-09-26: Python **71件**・Java **40件**とビルドに成功。実ゲームでの収集動作は未検証。
+
 ## コンテキスト予算 — Daemon
 
 SocialとDecisionそれぞれにコンテキスト長・出力上限・入力予算を設定できる。Socialには独立した履歴予算も持たせ、古い往復から削除する。
@@ -355,7 +374,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.11`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.12`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -367,7 +386,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.11
+.\scripts\deploy-mod.ps1 -Version 0.0.12
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

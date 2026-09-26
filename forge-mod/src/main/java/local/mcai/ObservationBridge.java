@@ -192,7 +192,7 @@ public final class ObservationBridge {
                 Object name = Item.itemRegistry.getNameForObject(drop.getEntityItem().getItem());
                 value2.addProperty("type", name == null ? "unknown" : name.toString().replaceAll("[^A-Za-z0-9_.:-]", "_"));
                 value2.addProperty("distance", Math.floor(drop.getDistanceToEntity(companion) / 2) * 2);
-                items.add("item-" + drop.getEntityId(), value2);
+                items.add("item-" + drop.getUniqueID().toString(), value2);
             }
         }
         state.add("hostiles", hostiles); state.add("items", items); return state;
