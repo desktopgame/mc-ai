@@ -5,9 +5,10 @@
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17）。
 Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済み**（MOD 0.0.18）。
+block観測のcandidate品質改善（表面露出フィルタ）を **実装済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
-自動テストはPython 91件・Java 56件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 91件・Java 61件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -21,12 +22,12 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.18`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.18.jar`（SHA-256 `7BDC6CF810AD8824D516A8FE50721166B0DA55C782E749E9F0209AE5C74E219D`）。0.0.17以前は `.disabled` |
+| MODバージョン | `0.0.19`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.19.jar`（SHA-256 `6BDD2121DB97B4DCBE72BD0E5D0469D77B284F2935D97510CE65D75B045394CA`）。0.0.18以前は `.disabled` |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **91件**・Java **56件**・Forgeビルド成功 |
+| 自動テスト | Python **91件**・Java **61件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -65,8 +66,9 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
   レビュー反映: Skillを離れるときは `goal:null` のcancel handshakeを完了してから通常actionへ移る。terminal receiptは収納前にqueue枠を予約し、満杯時は pending として再送する（黙って捨てない）。Forgeは `timeoutMs` で単発actionを打ち切る。Daemonは取消receiptを再選択ではなくcancelledで終端する。
   control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
   lease/receipt追加反映: leaseは受理が確定したpollのみ更新（`stale_goal`/`conflicting_goal`/`stale_state`等の拒否では更新しない）。action receiptの `goalRevision` を該当Skillのrevisionと照合し、不一致は409。terminal後に届いた既知actionのreceiptはrecorded/ACKのみで `settled` に記録し、terminal resultとprogressは変えない（未知IDは409）。
-- **mine primitive（0.0.13→0.0.17 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
+- **mine primitive（0.0.13→0.0.19 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
   観測はCompanion周辺16ブロック（水平±16・垂直±8）のallowlist blockのみ。typeごとに最近傍4件・合計最大32候補（一律N件だと近いdirtがlog/oreを締め出すため）。Daemonはopaqueな `block-<x>_<y>_<z>`、registry名、距離だけを扱う。
+  **表面露出フィルタ（0.0.19）**: 6近傍のいずれかが「air / 非固体material / leaves」のblockだけを候補にする（`BlockExposure`）。glassはsolidなので露出扱いにしない。埋まったdirtや壁内部のoreが最近傍候補を占有して `blocked` になる経路を防ぐ。これは観測候補の品質のみで、実行可能性のauthorityは `MineObstruction`／`MineTargetTask` のまま。上限（typeごと4・合計32）は `BlockCandidates` で維持。
   道具選択はForgeが決定的（`Material.isToolNotRequired()` なら素手、必須ツールが無ければ `tool_unavailable`）。破壊はblock hardnessとtool speedに応じた経時処理（`destroyBlockInWorldPartially`/`swingItem`）。
   遮蔽/到達可能性のauthorityは採掘距離へ移動した後の `MineTargetTask`（`MineObstruction`＝`Material.isSolid()`＋leaves例外、MaterialLookupで純粋化）で、採掘開始前とworld変更直前の同一tickで block種・lease・遮蔽を再検証する。claim前は target identity/type/range のみ再検証し、現在位置からの直線遮蔽判定はしない（回り込める壁越しのtargetを誤除外しないため）。遮蔽時は `blocked`。観測候補が全て `blocked` なら**検索窓を待たず即座に**最終理由 `blocked`（`no_block_in_range` と区別）。邪魔なブロックは破壊しない（1 action = 1 block）。`mine` goal の count は1固定（2以上は `unsupported_count`）。
   進捗は `mined`、receiptは `destroyed:{block,count}` で `collect_drop` のprogressとは混ぜない。入口は `!agent do mine <ブロック>`。詳細は [protocol/mine-primitive.md](protocol/mine-primitive.md)。

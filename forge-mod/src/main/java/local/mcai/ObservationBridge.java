@@ -4,6 +4,7 @@ import com.google.gson.*;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import net.minecraft.block.Block;
+import net.minecraft.block.material.Material;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityList;
 import net.minecraft.entity.EntityLivingBase;
@@ -15,6 +16,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.MathHelper;
+import net.minecraft.world.World;
 import org.apache.logging.log4j.LogManager;
 import java.io.*;
 import java.net.*;
@@ -198,16 +200,25 @@ public final class ObservationBridge {
                 items.add("item-" + drop.getUniqueID().toString(), value2);
             }
             // Bounded, type-fair mine-candidate observation: nearest few per block type, never a voxel map.
-            // Global nearest-N would let common ground (dirt) crowd out a nearby log or ore.
+            // Global nearest-N would let common ground (dirt) crowd out a nearby log or ore. Candidates
+            // are also limited to surface-exposed blocks, so a buried dirt or an in-wall ore is not offered.
             final int cx = MathHelper.floor_double(companion.posX), cy = MathHelper.floor_double(companion.posY),
                     cz = MathHelper.floor_double(companion.posZ);
-            Map<String, List<BlockCandidate>> byType = new HashMap<String, List<BlockCandidate>>();
+            final World world = companion.worldObj;
+            BlockExposure.MaterialLookup materials = new BlockExposure.MaterialLookup() {
+                @Override public Material get(int x, int y, int z) {
+                    // An unloaded neighbour is treated as non-passable so chunk edges are not false exposure.
+                    if (y < 0 || y > 255 || !world.blockExists(x, y, z)) { return Material.rock; }
+                    return world.getBlock(x, y, z).getMaterial();
+                }
+            };
+            BlockCandidates candidates = new BlockCandidates();
             for (int dx = -16; dx <= 16; dx++) {
                 for (int dz = -16; dz <= 16; dz++) {
                     for (int dy = -8; dy <= 8; dy++) {
                         int x = cx + dx, y = cy + dy, z = cz + dz;
-                        if (y < 1 || y > 254 || !companion.worldObj.blockExists(x, y, z)) { continue; }
-                        Block b = companion.worldObj.getBlock(x, y, z);
+                        if (y < 1 || y > 254 || !world.blockExists(x, y, z)) { continue; }
+                        Block b = world.getBlock(x, y, z);
                         if (b == Blocks.air) { continue; }
                         Object name = Block.blockRegistry.getNameForObject(b);
                         if (name == null) { continue; }
@@ -215,36 +226,19 @@ public final class ObservationBridge {
                         if (!SkillProtocol.BLOCKS.contains(key)) { continue; }
                         double distance = companion.getDistanceSq(x + 0.5D, y + 0.5D, z + 0.5D);
                         if (distance > CompanionEntity.ITEM_RANGE_SQUARED) { continue; }
-                        BlockCandidate candidate = new BlockCandidate(x, y, z, distance, key);
-                        List<BlockCandidate> list = byType.get(key);
-                        if (list == null) { list = new ArrayList<BlockCandidate>(); byType.put(key, list); }
-                        if (list.size() < 4) { list.add(candidate); continue; }
-                        int farthest = 0;
-                        for (int j = 1; j < list.size(); j++) { if (list.get(j).distance > list.get(farthest).distance) { farthest = j; } }
-                        if (candidate.distance < list.get(farthest).distance) { list.set(farthest, candidate); }
+                        if (!BlockExposure.exposed(x, y, z, materials)) { continue; }
+                        candidates.offer(new BlockCandidates.Candidate(x, y, z, distance, key));
                     }
                 }
             }
-            List<BlockCandidate> mineable = new ArrayList<BlockCandidate>();
-            for (List<BlockCandidate> list : byType.values()) { mineable.addAll(list); }
-            Collections.sort(mineable, new Comparator<BlockCandidate>() {
-                @Override public int compare(BlockCandidate a, BlockCandidate b) { return Double.compare(a.distance, b.distance); }
-            });
-            for (int i = 0; i < Math.min(32, mineable.size()); i++) {
-                BlockCandidate candidate = mineable.get(i); JsonObject value2 = new JsonObject();
-                value2.addProperty("type", candidate.name.replaceAll("[^A-Za-z0-9_.:-]", "_"));
+            for (BlockCandidates.Candidate candidate : candidates.select()) {
+                JsonObject value2 = new JsonObject();
+                value2.addProperty("type", candidate.type.replaceAll("[^A-Za-z0-9_.:-]", "_"));
                 value2.addProperty("distance", Math.floor(Math.sqrt(candidate.distance) / 2) * 2);
                 blocks.add("block-" + candidate.x + "_" + candidate.y + "_" + candidate.z, value2);
             }
         }
         state.add("hostiles", hostiles); state.add("items", items); state.add("blocks", blocks); return state;
-    }
-
-    private static final class BlockCandidate {
-        final int x, y, z; final double distance; final String name;
-        BlockCandidate(int x, int y, int z, double distance, String name) {
-            this.x = x; this.y = y; this.z = z; this.distance = distance; this.name = name;
-        }
     }
 
     private void addItem(JsonObject inventory, ItemStack stack) {

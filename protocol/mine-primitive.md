@@ -1,7 +1,7 @@
-# mine primitive — MOD 0.0.17 / protocol 2
+# mine primitive — MOD 0.0.19 / protocol 2
 
-状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加した増分。
-自動テストはPython 83件・Java 48件。基本の経時破壊は実ゲームで確認済み（遮蔽の回り込み・leaves越し・count境界は未検証）。
+状態: **実装済み**。`collect_drop(0.0.12)` を変更せず、mine primitive を追加し、候補品質を改善した増分。
+自動テストはPython 91件・Java 61件。基本の経時破壊は実ゲームで確認済み。
 
 ## 目的と固定した判断
 
@@ -10,6 +10,12 @@
   Companion周辺16ブロック（水平±16・垂直±8）で、**block typeごとに最近傍4件・合計最大32候補**。
   距離順の一律N件にすると近くの `dirt` が `log` やoreを締め出してしまうため、typeごとの公平な上限にする。
   既存 `items` と同じく registry名と2ブロック刻みの距離だけを持つ。
+- **表面露出フィルタ（0.0.19）**: 完全に埋まったblockや壁内部のblockを候補にしない。対象blockの6近傍のうち
+  少なくとも1面が「air / 非固体material（草・花）/ leaves」なら exposed として候補にする（`BlockExposure`）。
+  glassはnon-airかつsolidなので露出面扱いにしない。これは**観測候補の品質**だけを決め、実行可能性の最終判定では
+  ない（authorityは引き続き `MineTargetTask` の `MineObstruction`）。これにより「目の前に露出したdirtがあるのに
+  地下の埋まったdirtが最近傍を占有して `blocked` になる」経路をなくす。typeごと最近傍4件・合計32・voxel map化しない
+  という既存の上限は露出フィルタ後も `BlockCandidates` で維持する。独自の巨大allowlistは作らず `Material` を使う。
 - Daemonが扱うのは **opaqueな `targetRef`（`block-<x>_<y>_<z>`）、block registry名、distance** のみ。
   実座標はForgeがtargetRefから解決し、Daemonへ別途露出しない。
 - 全block列挙・3D voxel map・chunk knowledge・全metadata/NBTは扱わない。
@@ -87,7 +93,7 @@ allowlist（Daemon `SUPPORTED_BLOCKS` と MOD `SkillProtocol.BLOCKS` で一致�
 ## 変更したファイル
 
 - Daemon: `skill_protocol.py`（mine goal/result union）、`skills.py`（`Skill` 基底＋ `CollectDrop` / `Mine`）、`state_cache.py`（blocks）。
-- Forge: `SkillProtocol.java`（mine action/view）、`ActionBridge.java`（mineのclaim/receipt/lease）、`CompanionEntity.java`（`MineTargetTask`・道具選択・破壊）、`ObservationBridge.java`/`ObservationDiff.java`（blocks）。
+- Forge: `SkillProtocol.java`（mine action/view）、`ActionBridge.java`（mineのclaim/receipt/lease）、`CompanionEntity.java`（`MineTargetTask`・道具選択・破壊）、`ObservationBridge.java`/`ObservationDiff.java`（blocks）、`BlockExposure.java`/`BlockCandidates.java`（表面露出フィルタ・上限付きtype-fair選定）。
 
 ## 未実装（この増分の範囲外）
 
