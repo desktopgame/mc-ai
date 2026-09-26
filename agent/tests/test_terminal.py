@@ -124,6 +124,46 @@ class StoreTests(unittest.TestCase):
         second = store.record({k: event(skill_id="s-2", terminal_id="t-2")[k] for k in event() if k != "eventSequence"})
         self.assertEqual(second["eventSequence"], 2)   # sequence stays consecutive
 
+    def test_nested_mutation_of_the_callers_snapshot_does_not_change_the_store(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        snap["progress"]["acquired"] = 999
+        snap["target"]["block"] = "minecraft:stone"
+        page = store.snapshot("boot", "world")
+        self.assertEqual(page["events"][0]["progress"]["acquired"], 2)
+        self.assertEqual(page["events"][0]["target"]["block"], "minecraft:log")
+
+    def test_closed_identity_still_detects_conflicting_payload(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        store.present("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        self.assertIsNone(store.record(snap))                       # same payload: no regeneration
+        self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])
+        with self.assertRaises(TerminalError):                      # different payload after ACK
+            store.record(dict(snap, status="cancelled"))
+
+    def test_presentation_ledger_is_bounded_and_releases_say(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        for i in range(130):
+            snap = {k: event(skill_id="s-%d" % i, terminal_id="t-%d" % i)[k] for k in event()}
+            snap.pop("eventSequence", None)
+            store.record(snap)
+            store.present("boot", "world", "s-%d" % i, "t-%d" % i, "conv", "Steve", "d-%d" % i)
+        self.assertLessEqual(len(store.presentations), 100)
+        self.assertLessEqual(len(store.closed), 100)
+        # A delivered entry leaves the ledger and releases the heavy say.
+        snap = {k: event(skill_id="sf", terminal_id="tf")[k] for k in event()}
+        snap.pop("eventSequence", None)
+        store.record(snap)
+        store.present("boot", "world", "sf", "tf", "conv", "Steve", "df")
+        self.assertIn("say", store.presentations[("boot", "world", "sf", "tf")])
+        store.deliver("boot", "world", "sf", "tf", "conv", "Steve", "df", "displayed", "fallback")
+        self.assertNotIn(("boot", "world", "sf", "tf"), store.presentations)
+        self.assertNotIn("say", store.closed[("boot", "world", "sf", "tf")])
+
     def test_ack_closes_the_outbox_entry_and_never_regenerates_it(self):
         for outcome, variant in (("displayed", "fallback"), ("suppressed", None)):
             store = TerminalEventStore(clock=lambda: 0.0)

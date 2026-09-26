@@ -37,7 +37,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.23.jar`。Daemonも同じ版へ更新する。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **83件**・Java **48件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊と、ガラス越しの `blocked`（原木は破壊されない）を確認済み。回り込める壁越しの採掘・leaves越し・count境界は未検証。
 
 ## collect_block — 0.0.22 / protocol 2
@@ -55,8 +55,8 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - Forgeは `/v2/execution/open` の `capabilities` に `collect_block_v1` が無ければ新goalを送らず安全停止する（mine/collect_dropへ代替送信しない）。
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.23.jar`。
-2026-09-26: Python **131件**・Java **78件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。
+2026-09-26: Python **136件**・Java **79件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界・fingerprintでclosed衝突検出・deep copy・CONTROL laneでSkill制御優先。
 
 ## Skill終端 → Social発話 — Phase 1〜3 / protocol 2
 
@@ -68,7 +68,7 @@ Skillの `completed / failed / cancelled` を、確定済み terminal result を
 - Forgeは `skill_terminal_social_v1` がある時だけ新経路を使い、`TerminalDeliveryState`（純粋・first-wins）で identity ごとに一度だけ表示。**旧Daemonでは従来の終端表示を維持**する。
 - 未実装（Phase 4〜6）: typed ConversationQueue・LLM候補選択・delivery ACKによる会話履歴登録・forget/退出/timeout fence。実ゲーム未確認。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.23.jar`。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。
 
 ## コンテキスト予算 — Daemon
 
@@ -423,7 +423,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.23`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.24`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -435,7 +435,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.23
+.\scripts\deploy-mod.ps1 -Version 0.0.24
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

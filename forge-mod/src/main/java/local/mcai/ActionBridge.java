@@ -632,6 +632,10 @@ public final class ActionBridge {
      */
     private void terminalTick() {
         if (!terminalCapable || owner == null || state.session == null || terminalEpoch == null) { return; }
+        // Existing Skill control has priority on the shared CONTROL lane: never start a terminal
+        // poll while a Skill is active or a skill control request is in flight. Terminal events are
+        // durable, so they are fetched on a later tick instead.
+        if (!SkillRequestFence.terminalPollAllowed(skillActive, openCall, goalCall, cancelCall)) { return; }
         long now = System.nanoTime();
         TerminalReply reply = terminalReply;
         if (reply != null) {

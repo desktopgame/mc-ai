@@ -14,7 +14,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>`、`!agent do mine <ブロック>`、`!agent do collect_block minecraft:log <個数>`、v2 typed protocol。Planner・自然文からのSkill引数抽出は範囲外。
-自動テストはPython 133件・Java 78件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知は自動テスト範囲（実ゲーム未確認）。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 136件・Java 79件。基本の収集・mine・collect_block（実ゲーム）を確認済み。Skill終端Social通知は自動テスト範囲（実ゲーム未確認）。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -28,12 +28,12 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.23`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.23.jar`（SHA-256 `C7D98B3E482EF1DB08654B7889A01EBB32C04C1D49A3B5BCD066B4999A0AA29A`）。0.0.22以前は `.disabled` |
+| MODバージョン | `0.0.24`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。ビルド済み・Prism配置はゲーム終了後（作業時に起動中で未配置） |
+| Prismの有効MOD | `mc-ai-companion-0.0.23.jar`（SHA-256 `C7D98B3E482EF1DB08654B7889A01EBB32C04C1D49A3B5BCD066B4999A0AA29A`）。0.0.22以前は `.disabled`。0.0.24は未配置 |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **133件**・Java **78件**・Forgeビルド成功 |
+| 自動テスト | Python **136件**・Java **79件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -91,7 +91,7 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
   - 追加Javaテスト4件: binding不一致/許可（instance・type・target・未対応action）、goal binding、terminal result/progress不一致・completed不変条件・phase/result整合、混合sequence claim。Java 74件。
 - 未消化: `ActionBridge` の配送→consume→claim を通す統合テスト（Minecraft依存のため未）、および §13 の一部異常系（収納満杯・回収途中停止・経路失敗・pause/退出）の実機確認。
 
-## Skill終端 → Social発話 — Phase 1〜3（0.0.23）
+## Skill終端 → Social発話 — Phase 1〜3（0.0.24）
 
 仕様 [protocol/skill-terminal-social.md](protocol/skill-terminal-social.md) の段階1〜3を実装。**事実のauthorityはSkillの確定terminal result**、Socialは表現のみ、Forgeはworld/表示のauthority。LLM候補選択・conversation履歴登録はPhase 4〜6で未実装。
 
@@ -104,7 +104,8 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
 - `forge-mod/.../TerminalPresentation.java`（新、純粋）: Pythonと同一文字列の固定renderer。`protocol/fixtures/skill-terminal-fallback.json` で両言語一致を検証。
 - `forge-mod/.../SkillProtocol.java`: `TerminalEvent` 厳密parse（typed progress、completed不変条件）と `TERMINAL_CAPABILITY`。
 - `forge-mod/.../ActionBridge.java`: openの `skill_terminal_social_v1` がある時だけ新経路。`finishSkill` は実行状態を解放して表示をoutbox dispatcherへ委譲。`terminalTick` が `/v2/terminal-events` をCONTROL laneで取得し、`TerminalDeliveryState` でidentity重複排除して固定fallbackを一度だけ表示。**旧Daemon（capabilityなし）は従来の終端表示を維持**（二重表示しない）。
-- 追加テスト: `test_terminal.py`（Python 15件: fixture一致・projection/不変・bool/負数/未知キー拒否・duplicate poll/present/ACK・ACK後のoutbox閉鎖と再生成拒否・duplicate recordのsequence非消費・binding/同一Skill衝突・旧revision・cancel後着・capability・HTTP3endpoint）、`TerminalSocialTest.java`（Java 4件: fixture一致・配送first-wins/重複/期限・terminal event parse/拒否）。
+- 追加テスト: `test_terminal.py`（Python 18件: fixture一致・projection/不変・nested mutation不変・bool/負数/未知キー拒否・duplicate poll/present/ACK・ACK後outbox閉鎖・closed identityのpayload conflict・presentation台帳有界化とsay解放・duplicate recordのsequence非消費・binding/同一Skill衝突・旧revision・cancel後着・capability・HTTP3endpoint）、`TerminalSocialTest.java`（Java 5件: fixture一致・配送first-wins/重複/期限・terminal event parse/拒否・terminal pollのSkill制御優先）。
+- 配送基盤の追加修正（feature/skill-social 再レビュー）: presentation台帳と closed identity 台帳を各100件に有界化（`MAX_PRESENTATIONS`/`MAX_CLOSED`）。closed は state/binding/ACK/payload fingerprint のみ保持し say を解放。`record` は identity を sequence 採番より先に確認し、同一 payload は既存返却（sequence非消費）、内容違いは `terminal_identity_conflict`。closed後も fingerprint で同じ性質を維持。`record` は nested を含め deep copy で store が snapshot を所有。CONTROL lane は `SkillRequestFence.terminalPollAllowed` により、active Skill / skill request in-flight 中は terminal poll を見送り Skill 制御を優先。
 - 配送基盤の修正（feature/skill-social）: `TerminalEventStore.deliver` は displayed/suppressed ACK で outbox entry を閉じ（`_close`）、`afterSequence=0` の再pollにも出さない。ACK済み identity の `record` は再生成しない。`record` は identity を sequence 採番より先に確認し、同一 immutable payload の再送は既存 event を返して sequence を消費しない（内容違いは `terminal_identity_conflict`）。
 - 未実装（Phase 4〜6）: typed `ConversationQueue` と通常会話順序、owner初期化、LLM候補選択（`/v2/social/skill-terminal` は現在 fallback のみ返す）、delivery ACKによる会話履歴登録、forget/退出/timeout fence、12秒FIFO例外。Forgeからのpresent/ACK送出と実表示ACKは未接続（表示は固定fallback、outbox dedupeはin-memory）。
 
