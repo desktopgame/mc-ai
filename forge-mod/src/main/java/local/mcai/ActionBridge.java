@@ -53,6 +53,7 @@ public final class ActionBridge {
     private String terminalEpoch;
     private long nextTerminalPoll;
     private volatile TerminalReply terminalReply;
+    private PingBridge ping;
     private static final long TERMINAL_WINDOW_NANOS = 12000000000L;
 
     private static final class TerminalReply {
@@ -639,16 +640,16 @@ public final class ActionBridge {
         boolean skillControlImminent = skillActive && now >= nextPoll
                 && ((skillEpoch == null && openCall == null) || (skillEpoch != null && goalCall == null));
         if (!SkillRequestFence.terminalPollAllowed(openCall, goalCall, cancelCall, skillControlImminent)) { return; }
-        TerminalReply reply = terminalReply;
-        if (reply != null) {
+        TerminalReply done = terminalReply;
+        if (done != null) {
             terminalReply = null; terminalInFlight = false;
-            if (reply.response != null) {
+            if (done.response != null) {
                 try {
-                    for (SkillProtocol.TerminalEvent event : SkillProtocol.terminalEvents(reply.response)) {
+                    for (SkillProtocol.TerminalEvent event : SkillProtocol.terminalEvents(done.response)) {
                         if (!event.daemonEpoch.equals(terminalEpoch) || !event.session.equals(state.session)) { continue; }
                         if (deliveries.accept(event.identity(), event.renderFallback(), now, TERMINAL_WINDOW_NANOS)) {
                             String text = deliveries.finishFallback(event.identity());
-                            if (text != null) { reply(text); }
+                            if (text != null) { deliverTerminal(event.identity(), text); }
                         }
                         if (event.eventSequence > terminalCursor) { terminalCursor = event.eventSequence; }
                     }
@@ -657,9 +658,21 @@ public final class ActionBridge {
                 }
             }
         }
-        for (String text : deliveries.fallbackExpired(now)) { reply(text); }
+        for (String identity : deliveries.expired(now)) {
+            String text = deliveries.finishFallback(identity);
+            if (text != null) { deliverTerminal(identity, text); }
+        }
         if (!terminalInFlight && now >= nextTerminalPoll) { startTerminalFetch(); }
     }
+
+    /** Routes a terminal fallback through the shared conversation queue so it orders with chat. */
+    private void deliverTerminal(String identity, String text) {
+        if (ping != null && owner != null) { ping.enqueueTerminal(owner, identity, text); }
+        else { reply(text); }
+    }
+
+    /** Set once the PingBridge exists, so terminal notifications share its conversation queue. */
+    public void setPingBridge(PingBridge bridge) { this.ping = bridge; }
 
     private void startTerminalFetch() {
         final JsonObject body = new JsonObject();

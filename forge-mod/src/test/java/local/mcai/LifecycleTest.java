@@ -36,6 +36,30 @@ public class LifecycleTest {
         assertFalse(state.claim("old", 1, "old-action"));
         assertTrue(state.claim("new", 1, "new-action"));
     }
+    @Test public void conversationQueueMixesChatAndTerminalInOneOrder() {
+        ConversationQueue queue = new ConversationQueue();
+        assertTrue(queue.offer("chat-1"));
+        assertTrue(queue.offerTerminal("ta", "say-a", 0L));
+        assertTrue(queue.offer("chat-2"));
+        assertEquals(ConversationQueue.Kind.USER_CHAT, queue.poll().kind);
+        assertEquals(ConversationQueue.Kind.SKILL_TERMINAL, queue.poll().kind);
+        assertEquals(ConversationQueue.Kind.USER_CHAT, queue.poll().kind);
+        assertNull(queue.poll());
+    }
+
+    @Test public void conversationQueueKeepsSeparateCapacitiesAndTerminalDedupe() {
+        ConversationQueue queue = new ConversationQueue();
+        for (int i = 0; i < ConversationQueue.TERMINAL_CAPACITY; i++) { assertTrue(queue.offerTerminal("t" + i, "s", 0L)); }
+        assertFalse(queue.offerTerminal("t-overflow", "s", 0L));   // terminal slot full
+        assertFalse(queue.containsTerminal("t-overflow"));
+        for (int i = 0; i < ConversationQueue.CHAT_CAPACITY; i++) { assertTrue(queue.offer("c" + i)); }
+        assertFalse(queue.offer("chat-overflow"));                 // chat slot independent of terminal
+        assertTrue(queue.containsTerminal("t3"));
+        assertFalse(queue.offerTerminal("t3", "duplicate", 0L));   // duplicate identity rejected
+        queue.remove(queue.snapshot().get(0));
+        assertFalse(queue.containsTerminal("t0"));
+    }
+
     @Test public void conversationQueueIsBoundedOrderedAndDoesNotCancelAction() {
         GoalState state = new GoalState(); state.reset("world"); state.replace("follow_owner");
         ConversationQueue queue = new ConversationQueue();

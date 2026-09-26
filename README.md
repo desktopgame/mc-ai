@@ -37,7 +37,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。Daemonも同じ版へ更新する。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.25.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **83件**・Java **48件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊と、ガラス越しの `blocked`（原木は破壊されない）を確認済み。回り込める壁越しの採掘・leaves越し・count境界は未検証。
 
 ## collect_block — 0.0.22 / protocol 2
@@ -55,8 +55,8 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - Forgeは `/v2/execution/open` の `capabilities` に `collect_block_v1` が無ければ新goalを送らず安全停止する（mine/collect_dropへ代替送信しない）。
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。
-2026-09-26: Python **137件**・Java **79件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.25.jar`。
+2026-09-26: Python **137件**・Java **81件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。
 
 ## Skill終端 → Social発話 — Phase 1〜3 / protocol 2
 
@@ -66,9 +66,10 @@ Skillの `completed / failed / cancelled` を、確定済み terminal result を
 - 固定rendererは Python/Java で同一文字列（`protocol/fixtures/skill-terminal-fallback.json`）。例: `原木回収: 完了。原木を5/5個回収、採掘3ブロック。` / `原木回収: 失敗[drop_unavailable]。回収2/5個、採掘3ブロック。確認した範囲で回収対象を見つけられませんでした。`
 - reasonは辞書で意味を固定（`mined` は「Nブロック破壊」、`acquired` は累積取得。未知reasonは推測せず enum 表示）。`complete=false` は「確定分は…。未確定の操作があります。」を付ける。
 - Forgeは `skill_terminal_social_v1` がある時だけ新経路を使い、`TerminalDeliveryState`（純粋・first-wins）で identity ごとに一度だけ表示。**旧Daemonでは従来の終端表示を維持**する。
-- 未実装（Phase 4〜6）: typed ConversationQueue・LLM候補選択・delivery ACKによる会話履歴登録・forget/退出/timeout fence。実ゲーム未確認。
+- **Phase 4（0.0.25）**: `ConversationQueue` を `USER_CHAT`/`SKILL_TERMINAL` のtyped entryへ拡張（chat 4件・2048字維持、terminal待機枠8件、単一FIFO）。`PingBridge` が両種を同一順序で処理し、terminalは会話contextを初期化して表示（typed commandだけでも通知可）。待機terminalは12秒でFIFO例外として先行chat中でも表示。forget/退出で未表示terminalは旧会話として表示または抑制。
+- 未実装（Phase 5〜6）: LLM候補選択（`/v2/social/skill-terminal` は現在 fallback のみ返す）・delivery ACKによる会話履歴登録・Forgeからのpresent/ACK送出。実ゲーム未確認。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.24.jar`。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.25.jar`。
 
 ## コンテキスト予算 — Daemon
 
@@ -423,7 +424,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.24`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.25`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -435,7 +436,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.24
+.\scripts\deploy-mod.ps1 -Version 0.0.25
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。
