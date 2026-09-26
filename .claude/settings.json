@@ -22,8 +22,34 @@
       "Bash(git status)",
       "Bash(git diff *)",
       "Bash(git log -n *)",
+      "Bash(git log *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+
+      "Bash(unzip -l *)",
+      "Bash(unzip -p *)",
+      "Bash(iconv *)",
+
+      "PowerShell(Get-FileHash *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(netstat *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Select-String *)",
+
+      "PowerShell(.\\scripts\\forge.ps1 build)",
+      "PowerShell(.\\scripts\\restart-daemon.ps1)",
+      "PowerShell(.\\scripts\\restart-daemon.ps1 *)",
+      "PowerShell(.\\scripts\\deploy-mod.ps1 *)",
+
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:maven.minecraftforge.net)",
+      "WebFetch(domain:files.minecraftforge.net)",
+      "WebFetch(domain:minecraft.wiki)",
+      "WebFetch(domain:mcforge.readthedocs.io)",
+      "WebFetch(domain:stackoverflow.com)"
     ]
   },
   "env": {
