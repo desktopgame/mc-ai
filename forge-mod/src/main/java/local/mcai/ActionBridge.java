@@ -41,6 +41,8 @@ public final class ActionBridge {
     private long claimedDeadline;
     private JsonObject pendingSkillResult;
     private volatile JsonObject openResponse, skillResponse;
+    /** Control lease: a verified same-epoch/session/revision response keeps the action alive this long. */
+    private static final long CONTROL_LEASE_NANOS = 5000000000L;
 
     private static final class Completion {
         final String session; final int revision; final JsonObject response; final long received;
@@ -339,7 +341,9 @@ public final class ActionBridge {
             JsonObject response = skillResponse; skillResponse = null;
             consumeSkill(response);
         }
-        if (!skillActive || skillInFlight || now < nextPoll || claimedActionId != null) { return; }
+        if (!skillActive || skillInFlight || now < nextPoll) { return; }
+        // Poll even while an action is outstanding: the response renews the control lease and lets
+        // the Forge observe a Daemon-side cancellation before committing world changes.
         startSkillGoal(skillGoalObject());
     }
 
@@ -347,6 +351,8 @@ public final class ActionBridge {
         if (response == null) { failSkill("disconnected"); return; }
         try {
             SkillProtocol.validateView(response, state.session, state.revision, skillEpoch);
+            // A verified control response renews the lease for the action that is running.
+            if (active != null) { active.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS); }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
             if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
             if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.acquired); return; }
@@ -379,7 +385,9 @@ public final class ActionBridge {
             claimedItem = action.item; claimedMaxCount = action.maxCount;
             claimedDeadline = System.nanoTime() + (long) action.timeoutMs * 1000000L;
             state.status = "running";
-            active = companion; companion.pickupItem(action.targetRef, action.maxCount);
+            active = companion;
+            companion.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
+            companion.pickupItem(action.targetRef, action.maxCount);
             enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", 0, action.item);
         } catch (RuntimeException e) {
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected skill view ({})", e.getClass().getSimpleName());

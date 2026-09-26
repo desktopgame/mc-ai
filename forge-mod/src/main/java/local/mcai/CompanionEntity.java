@@ -33,6 +33,8 @@ public final class CompanionEntity extends EntityCreature {
     private int pickupStored = -1;
     private String pickupOutcome = "";
     private boolean targetPickup;
+    // Skill control lease: no world mutation after this nanoTime. Long.MAX_VALUE disables it (legacy pickup).
+    private long controlDeadline = Long.MAX_VALUE;
 
     public CompanionEntity(World world) {
         super(world);
@@ -88,6 +90,7 @@ public final class CompanionEntity extends EntityCreature {
     public boolean pickupResolved() { return pickupStored >= 0; }
     public int lastPickupStored() { return pickupStored; }
     public String pickupOutcome() { return pickupOutcome; }
+    public void setControlDeadline(long value) { controlDeadline = value; }
 
     public int carriedCount() {
         int total = 0;
@@ -350,6 +353,10 @@ public final class CompanionEntity extends EntityCreature {
             if (getDistanceSqToEntity(item) <= 2.25D) {
                 getNavigator().clearPathEntity();
                 if (item.delayBeforeCanPickup > 0) { result("picking_up"); return; }
+                // Never mutate the world after the control lease has expired.
+                if (System.nanoTime() > controlDeadline) {
+                    stop(); pickupStored = 0; pickupOutcome = "disconnected"; result("no_item_in_range"); return;
+                }
                 collectTarget(item);
                 return;
             }

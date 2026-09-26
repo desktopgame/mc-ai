@@ -22,6 +22,7 @@ READY_TIMEOUT = 10.0
 RUNNING_TIMEOUT = 40.0
 SEARCH_WINDOW = 6.0
 CANCEL_GRACE = 5.0
+CONTROL_LEASE = 5.0
 MAX_FAILURES = 3
 MAX_ACTIONS = 192
 MAX_ACTIVE = 32
@@ -77,6 +78,7 @@ class SkillManager:
         self.active = OrderedDict()   # session -> CollectDrop
         self.other = OrderedDict()    # skillInstanceId -> CollectDrop (settling or terminal)
         self.revisions = {}           # session -> accepted revision
+        self.leases = {}              # session -> last verified control poll time
 
     # ---- ingestion -------------------------------------------------------
     def open(self, data):
@@ -105,6 +107,8 @@ class SkillManager:
         if isinstance(goal, str):
             return self._legacy(session, revision, goal)
         with self.lock:
+            # Only an accepted control poll renews the lease; action results and status reads do not.
+            self.leases[session] = self.clock()
             previous = self.revisions.get(session)
             if previous is not None and revision < previous:
                 raise SkillSyncError("stale_goal")
@@ -315,6 +319,9 @@ class SkillManager:
         if skill.current is not None:
             return
         now = self.clock()
+        # No fresh control lease: do not issue. The Forge renews it about once a second while it runs.
+        if now - self.leases.get(skill.session, float("-inf")) > CONTROL_LEASE:
+            return
         cached = self._cache(skill.session)
         if skill.fence_sequence is not None:
             if not cached["stale"] and cached["sequence"] > skill.fence_sequence:

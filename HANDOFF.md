@@ -5,7 +5,7 @@
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と v2 typed protocol。Planner・採掘・自然文からの引数抽出は範囲外。
-自動テストはPython 72件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
+自動テストはPython 73件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -46,6 +46,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
   DaemonがSkill進捗・候補選択・期限・理由を管理し、ForgeはUUIDで固定した対象だけを数量制限付きで収納する。
   入口は `!agent do collect_drop <アイテム> <個数>`。allowlistは log/cobblestone/iron_ingot/planks/stick、count 1〜64。手動操作・新指示は旧Skillを取り消す。
   レビュー反映: Skillを離れるときは `goal:null` のcancel handshakeを完了してから通常actionへ移る。terminal receiptは収納前にqueue枠を予約し、満杯時は pending として再送する（黙って捨てない）。Forgeは `timeoutMs` で単発actionを打ち切る。Daemonは取消receiptを再選択ではなくcancelledで終端する。
+  control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
 
 ### pickup / deposit の設計判断（重要）
 
@@ -89,7 +90,7 @@ Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEM
 
 ## 検証状況
 
-直近の自動検証はPython **72件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
+直近の自動検証はPython **73件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
 
 実ゲームで確認済み（0.0.9～0.0.12分）:
 

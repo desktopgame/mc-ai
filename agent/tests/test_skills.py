@@ -152,6 +152,24 @@ class SkillTests(unittest.TestCase):
         manager.tick()
         self.assertEqual(manager.update(goal(1, count=2, epoch=self.epoch))["skill"]["result"]["reason"], "stale_state")
 
+    def test_control_lease_gates_action_issue(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4), "item-b": drop(6)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        manager.result({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                        "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                        "actionSequence": action["actionSequence"], "status": "running", "reason": "accepted",
+                        "acquired": {"item": "minecraft:log", "count": 0}})
+        self.now[0] = 10.0  # the last control poll was at t=0, so the lease is stale
+        states.update(snapshot(items={"item-a": drop(4), "item-b": drop(6)}, seq=2), True)
+        manager.result({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                        "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                        "actionSequence": action["actionSequence"], "status": "succeeded", "reason": "completed",
+                        "acquired": {"item": "minecraft:log", "count": 2}})
+        self.assertIsNone(manager.active["world"].current)
+        view = manager.update(goal(1, count=5, epoch=self.epoch))
+        self.assertIsNotNone(view["action"])
+
     def test_cancelled_receipt_without_prior_cancel_is_terminal(self):
         states, manager, self.epoch = self.create()
         states.update(snapshot(items={"item-a": drop(4), "item-b": drop(6)}, seq=1), True)
