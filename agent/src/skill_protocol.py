@@ -9,7 +9,10 @@ SUPPORTED_BLOCKS = ("minecraft:log", "minecraft:log2", "minecraft:cobblestone", 
                     "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
                     "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel")
 LEGACY_GOALS = ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")  # v1 /goal only
-CAPABILITIES = ("collect_drop_v1", "mine_v1")
+CAPABILITIES = ("collect_drop_v1", "mine_v1", "collect_block_v1")
+
+# collect_block MVP: the block -> collected item mapping is an explicit table, not a name convention.
+COLLECT_BLOCK_TARGETS = {"minecraft:log": {"block": "minecraft:log", "item": "minecraft:log"}}
 
 TOP_STATUS = ("idle", "thinking", "running", "completed", "failed", "cancelled")
 PHASES = ("selecting", "waiting_action", "cancelling", "terminal")
@@ -29,7 +32,7 @@ FAILURE_REASONS = ("target_lost", "target_not_ready", "tool_unavailable", "block
 TERMINAL_FAILURE_REASONS = ("tool_unavailable",)
 PATH_FAILURES = ("path_not_found",)
 
-SKILL_REASONS = ("completed", "no_item_in_range", "no_block_in_range", "path_not_found",
+SKILL_REASONS = ("completed", "no_item_in_range", "no_block_in_range", "drop_unavailable", "path_not_found",
                  "retry_exhausted", "inventory_full", "tool_unavailable", "blocked", "unsafe_state",
                  "owner_unavailable", "companion_unavailable", "stale_state", "expired",
                  "disconnected", "stopped", "replaced", "action_failed")
@@ -125,6 +128,14 @@ def parse_mine(goal):
     return {"type": "mine", "target": {"block": parsed["block"]}, "count": 1, "constraints": []}
 
 
+def parse_collect_block(goal):
+    if goal.get("type") != "collect_block":
+        raise SkillRequestError("invalid_request")
+    parsed = _parse_target(goal, "block", tuple(COLLECT_BLOCK_TARGETS), "unsupported_block")
+    return {"type": "collect_block", "target": {"block": parsed["block"]},
+            "count": parsed["count"], "constraints": []}
+
+
 def parse_goal_object(goal):
     if not isinstance(goal, dict):
         raise SkillRequestError("invalid_request")
@@ -133,6 +144,8 @@ def parse_goal_object(goal):
         return parse_collect_drop(goal)
     if kind == "mine":
         return parse_mine(goal)
+    if kind == "collect_block":
+        return parse_collect_block(goal)
     raise SkillRequestError("unsupported_goal")
 
 

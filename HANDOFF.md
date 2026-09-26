@@ -12,7 +12,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
-自動テストはPython 91件・Java 65件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 107件・Java 65件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -31,7 +31,7 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **91件**・Java **65件**・Forgeビルド成功 |
+| 自動テスト | Python **107件**・Java **65件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -61,6 +61,16 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | **P2 timeout** completionが失われても永久待機しない | `Request.expired(now, REQUEST_TIMEOUT_NANOS=6s)` を追加。open/goalはcompletion未到着でも期限超過でrequestを破棄して再送可能状態へ。cancelは既存の最大3回再試行と同じゲートに統合（期限超過は未確認試行として数える） | `SkillHardeningTest.anUnansweredRequestExpiresSoItIsNeverAwaitedForever` |
 
 stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillRequestFence.fresh(...)`。completionのdelivery: request-scoped `Request.completion`。lost completion: `Request.expired(...)` による有界timeout（open/goalは再送、cancelは3回上限）。
+
+## collect_block Daemon層 — 段階①②（MOD版は据え置き 0.0.20、Forge接続は0.0.21）
+
+指示書 [protocol/collect-block.md](protocol/collect-block.md) のうちDaemon層のみ実装。Forge側は次増分。
+
+- `skill_protocol.py`: collect_block goal解析（blockは `COLLECT_BLOCK_TARGETS` のみ、count1〜64、constraints空のみ、未知キー拒否）、capability `collect_block_v1`、終端理由 `drop_unavailable`。
+- `skills.py`: **発行action descriptor台帳**へ組み替え。`SkillManager.result` の `target_field` 前提を外し、`_apply_result` は descriptor の payloadField（item→acquired / block→mined）で一度だけ精算。mine_target と pickup_target を同一Skillで交互発行できる。`collect_drop`/`mine` の意味・view・progressは不変。
+- `CollectBlock`: stage `select_source / wait_drop / recover_drop`。成功条件は `acquired`（このSkillが収納した数）。開始前所持は数えない。`mined` は副作用カウンタ。mine成功では完了せず新観測を待ち（6秒・延長なし、失敗時 `drop_unavailable`）、回収が成功するまで次mineへ戻らない。blockedは別block/dropへ、尽きたら `blocked`。tool_unavailable/inventory_full/unsafeは即終端。取消は確定済み両カウンタを保持。
+- テスト: `agent/tests/test_collect_block.py` 16件（混合action列・旧receipt再送ACK・過大count/種類違い拒否・drop_unavailable・取消精算・blocked・retry_exhausted 等）。既存 `test_skills.py` は互換のまま、capability期待値のみ更新。
+- 未実装: Forgeの受付・capability確認・UI（§11）・実ゲーム検証。Daemonは `collect_block_v1` を広告済みなので、Forgeはcapability確認後にのみ新goalを送ること。
 
 
 ## 実装済みの機能
