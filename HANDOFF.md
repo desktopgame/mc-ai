@@ -5,7 +5,7 @@
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と v2 typed protocol。Planner・採掘・自然文からの引数抽出は範囲外。
-自動テストはPython 71件・Java 40件。実ゲームでの収集動作は未検証で、次回は配置・実機確認から。
+自動テストはPython 71件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -19,14 +19,14 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layerを実装（本ドキュメント更新前は未コミット） |
 | MODバージョン | `0.0.12`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理） |
-| Prismの有効MOD | 未反映。0.0.11のまま（0.0.12は `build/libs` に生成済み） |
-| Daemon | 未再起動。v2 Skill対応はソース上のみ |
+| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `310CE06B6E7361E8B9C8DEA90158C617D97CC0E5A313DB92917AE10682AB8713`）。0.0.11は `.disabled` |
+| Daemon | PID `42412` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（0.0.12相当） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
 | 自動テスト | Python **71件**・Java **40件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映待ちがある。** MOD 0.0.12 をPrismへ配置し、Daemonを再起動して、`!agent do collect_drop` を実機で確認する。
+**反映済み。** 実機で `!agent do collect_drop` を確認するだけ。
 
 ## 実装済みの機能
 
@@ -89,18 +89,19 @@ Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEM
 
 直近の自動検証はPython **71件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
 
-実ゲームで確認済み（0.0.9～0.0.11分）:
+実ゲームで確認済み（0.0.9～0.0.12分）:
 
 - デバッグ通知OFFでチャットが静かになること、状態アイコンの切り替わり。
 - 会話「そこに落ちてるの拾って」→ 判断 → 拾得完了 → `!agent status` の所持品に反映（`minecraft:sand x1`）。
 - 会話「持ってるもの渡して」→ 近づいて受け渡し → 所持品が空になること。
 - 「近くに拾えるアイテムがありません」「種類は指定できない」の拒否経路。追従・拾得に回帰がないこと。
+- **Skill Layer（0.0.12）**: `!agent do collect_drop minecraft:stick 2` で対象固定の収集が完了すること。
 
 実モデルで確認済み: pickup/depositの判断（対象あり・なしの両方）、会話からの `pickup_item` / `deposit_items`、否定・種類指定の拒否。
 
 未確認・残る制限:
 
-- Skill Layer（0.0.12）は自動テストのみ。実ゲームでの対象固定収納・部分収納・地面残量・取消・経路失敗は未検証。
+- Skill Layer（0.0.12）の基本収集は実機確認済み。部分収納（対象がmaxCountより少ない）・地面残量・取消・置換・経路失敗・満杯は未検証。
 - ワールド再入場後のCompanionインベントリ保持（NBT保存は実装済み・実機未検証）。
 - 死亡時の所持品ドロップ、`inventory_full`（9スロット満杯での拾得）、`owner_inventory_full`（所有者満杯での受け渡し）。
 - 拾得・受け渡し中の経路失敗（`path_not_found`）での中断。
@@ -200,7 +201,7 @@ Phase 6の残りは `attack / mine / place / craft / smelt`。`pickup` と `depo
 - Daemonのログ: `.tools/daemon.stdout.log` / `.tools/daemon.stderr.log`、PID記録 `.tools/daemon.pid`（現在性は保証しない）。
   `intent-*` `lifecycle-*` `phase*-*` は過去セッションの記録。
 - ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`（MODの初期化・例外）と `latest.log`（チャット、CP932）。
-- 配置済み0.0.11のSHA-256: `CD0AE1547C1AADEB4897993E0F5D99741263A34AA893C35AAEBCE19A7CC38447`。
+- 配置済み0.0.12のSHA-256: `310CE06B6E7361E8B9C8DEA90158C617D97CC0E5A313DB92917AE10682AB8713`。
 - Claude向けの権限設定は `.claude/settings.json`（読み取り専用コマンド、上記3スクリプト、WebFetchの許可ドメイン）。
 
 古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。

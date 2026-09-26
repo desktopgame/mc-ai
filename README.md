@@ -19,7 +19,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - 会話・Tactical・Planner・採掘は範囲外。自然文からの引数抽出も後続。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.12.jar`。Daemonも同じ版へ更新する。
-2026-09-26: Python **71件**・Java **40件**とビルドに成功。実ゲームでの収集動作は未検証。
+2026-09-26: Python **71件**・Java **40件**とビルドに成功。実ゲームで `minecraft:stick` の基本収集（対象固定）を確認済み。部分収納・取消・経路失敗は未検証。
 
 ## コンテキスト予算 — Daemon
 
