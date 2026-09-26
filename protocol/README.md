@@ -47,7 +47,7 @@ HTTP + UTF-8 JSON。`POST /v1/turn`。全リクエスト・JSON応答に整数�
 `decision` は `{"action":"stop"}` または `{"action":"follow","target":"owner"}` / `{"action":"look","target":"owner"}`。
 `reasonCode` は `goal_follow / goal_stop / goal_look / owner_near / low_health / owner_out_of_range / unavailable_action` のみ。
 
-体力6以下はstopのみ、followは所有者まで2ブロック超・32ブロック以内のみ。目的と一致しないfollow/look、未許可の操作、余分なパラメーターは拒否する。
+体力6以下はstopのみ、followは所有者まで32ブロック以内。0.0.7からは2ブロック以内でもfollow/owner_nearで追従状態を維持し、移動だけを保留する。目的と一致しないfollow/look、未許可の操作、余分なパラメーターは拒否する。
 入力不正は400、判断provider未設定・busy・タイムアウト・不正出力は503でdecisionを返さない。
 
 `executed: false` は判断の提案だけであることを示す。Phase 5では、明示的なstateの代わりに `session` を指定すればキャッシュの状態を使える。stateとsessionの同時指定は400、古い状態・Companion不在・不明なセッションは409。自動操作は行わない。

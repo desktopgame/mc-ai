@@ -15,6 +15,7 @@ public final class CompanionEntity extends EntityCreature {
     private String task = "idle";
     private int lookTicks;
     private String lastResult = "none";
+    private final FollowRetry pathRetry = new FollowRetry();
 
     public CompanionEntity(World world) {
         super(world);
@@ -40,6 +41,7 @@ public final class CompanionEntity extends EntityCreature {
     public String lastResult() { return lastResult; }
     public void follow() { stop(); task = "follow"; result("following"); }
     public void stop() {
+        pathRetry.reset();
         task = "idle";
         lookTicks = 0;
         getNavigator().clearPathEntity();
@@ -100,20 +102,22 @@ public final class CompanionEntity extends EntityCreature {
         FollowTask() { setMutexBits(3); }
         @Override public boolean shouldExecute() { return task.equals("follow") && owner() != null; }
         @Override public boolean continueExecuting() { return shouldExecute(); }
-        @Override public void startExecuting() { retryTicks = 0; }
+        @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
         @Override public void resetTask() { getNavigator().clearPathEntity(); }
         @Override public void updateTask() {
             EntityPlayer target = owner();
             if (target == null) { return; }
             getLookHelper().setLookPositionWithEntity(target, 30.0F, 30.0F);
             double distance = getDistanceSqToEntity(target);
-            if (distance <= 4.0D) { getNavigator().clearPathEntity(); result("near_owner"); return; }
+            if (distance <= 4.0D) { getNavigator().clearPathEntity(); pathRetry.reset(); result("near_owner"); return; }
             if (distance > 1024.0D) {
                 getNavigator().clearPathEntity(); result("owner_out_of_range"); return;
             }
             if (--retryTicks <= 0) {
                 retryTicks = 20;
-                result(getNavigator().tryMoveToEntityLiving(target, 1.0D) ? "following" : "path_not_found");
+                boolean found = getNavigator().tryMoveToEntityLiving(target, 1.0D);
+                boolean exhausted = pathRetry.exhausted(found);
+                result(found ? "following" : exhausted ? "path_not_found" : "path_retrying");
             }
         }
     }

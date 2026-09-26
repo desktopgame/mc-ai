@@ -67,7 +67,9 @@ public class LifecycleTest {
         assertFalse(a.safe("follow_owner", "c", 1, 20, 64));
         assertFalse(a.safe("follow_owner", "c", 0, 6, 64));
         assertFalse(a.safe("follow_owner", "c", 0, 20, 1025));
-        assertFalse(a.safe("follow_owner", "c", 0, 20, 4));
+        assertTrue(a.safe("follow_owner", "c", 0, 20, 4));
+        assertTrue(a.safe("follow_owner", "c", 0, 20, 0));
+        assertFalse(a.safe("follow_owner", "c", 0, 20, -1));
         assertFalse(a.safe("follow_owner", "c", 0, Double.NaN, 64));
     }
     private void reject(JsonObject value) {

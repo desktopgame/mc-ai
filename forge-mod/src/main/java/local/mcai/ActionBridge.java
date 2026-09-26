@@ -17,6 +17,7 @@ public final class ActionBridge {
     private final DaemonClient client;
     private final ObservationBridge observations;
     private final GoalState state = new GoalState();
+    private final IntentOrder intentOrder = new IntentOrder();
     private EntityPlayerMP owner;
     private CompanionEntity active;
     private String expectedCompanion;
@@ -61,15 +62,28 @@ public final class ActionBridge {
                 if (results.size() < 64) { results.add(new ResultJob(cancel, "/v1/goal")); }
                 else { LogManager.getLogger(CompanionMod.MOD_ID).warn("Old goal revocation could not be queued"); }
             }
-            state.reset(session); sentRevision = -1; nextPoll = 0;
+            state.reset(session); intentOrder.reset(); sentRevision = -1; nextPoll = 0;
             owner = player; expectedCompanion = null;
         }
     }
 
     /** Manual actions invalidate AI work immediately, even when the daemon is unavailable. */
     public void manualOverride(EntityPlayerMP player) {
-        synchronize(player); cancelActive("replaced"); state.replace(null); nextPoll = 0;
+        synchronize(player); intentOrder.manual(); cancelActive("replaced"); state.replace(null); nextPoll = 0;
     }
+
+    public IntentOrder.Ticket captureIntent(EntityPlayerMP player) {
+        synchronize(player); return intentOrder.capture();
+    }
+
+    /** Returns false for stale/rejected intents so their optimistic Social reply is not displayed. */
+    public boolean acceptIntent(EntityPlayerMP player, IntentOrder.Ticket ticket, String goal) {
+        synchronize(player);
+        if (!intentOrder.current(ticket)) { reply("以前の指示への返答は取り消しました。"); return false; }
+        return requestGoal(player, goal, ticket);
+    }
+
+    public void stopFromChat(EntityPlayerMP player) { requestGoal(player, "stop", null); }
 
     @SubscribeEvent public void onChat(ServerChatEvent event) {
         String message = event.message.trim();
@@ -80,24 +94,34 @@ public final class ActionBridge {
         if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop"))) {
             reply("使い方: !agent do follow / look / stop"); return;
         }
-        if (parts[2].equals("stop")) {
-            manualOverride(event.player);
-            CompanionEntity companion = CompanionCommands.find(event.player);
+        requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner" : "stop", null);
+    }
+
+    private boolean requestGoal(EntityPlayerMP player, String goal, IntentOrder.Ticket ticket) {
+        synchronize(player);
+        if (!(goal.equals("follow_owner") || goal.equals("look_at_owner") || goal.equals("stop"))) { return false; }
+        if (goal.equals("stop")) {
+            // A delayed natural stop must not cancel a newer explicit action.
+            if (ticket != null) { intentOrder.accept(ticket); cancelActive("replaced"); state.replace(null); nextPoll = 0; }
+            else { manualOverride(player); }
+            CompanionEntity companion = CompanionCommands.find(player);
             if (companion != null) { companion.stop(); }
-            reply("停止しました。待機中の判断も取り消しました。"); return;
+            reply("停止しました。待機中の判断も取り消しました。"); return true;
         }
         MinecraftServer server = MinecraftServer.getServer();
-        CompanionEntity companion = CompanionCommands.find(event.player);
-        if (server.getConfigurationManager().playerEntityList.size() != 1 || !event.player.isEntityAlive()
-                || state.session == null || companion == null || companion.worldObj != event.player.worldObj) {
-            reply("Companionと観測の同期を確認してください。ワールド内で数秒待ってから試せます。"); return;
+        CompanionEntity companion = CompanionCommands.find(player);
+        if (server.getConfigurationManager().playerEntityList.size() != 1 || !player.isEntityAlive()
+                || state.session == null || companion == null || companion.worldObj != player.worldObj) {
+            reply("Companionと観測の同期を確認してください。ワールド内で数秒待ってから試せます。"); return false;
         }
-        if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return; }
+        if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
+        if (ticket == null) { intentOrder.manual(); } else { intentOrder.accept(ticket); }
         cancelActive("replaced"); companion.stop();
-        state.replace(parts[2].equals("follow") ? "follow_owner" : "look_at_owner");
-        expectedCompanion = companion.getUniqueID().toString(); expectedDimension = event.player.dimension;
+        state.replace(goal);
+        expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         deadline = System.nanoTime() + 60000000000L; nextPoll = 0;
         reply("新しい指示を受け付けました。判断を待っています。");
+        return true;
     }
 
     private void result(String status, String reason) {
@@ -119,6 +143,7 @@ public final class ActionBridge {
         }
     }
     private void fail(String reason) {
+        intentOrder.manual(); // Pending natural instructions must not restart a failed/disconnected action.
         if (active != null) { active.stop(); active = null; }
         if (state.actionId != null && state.status.equals("running")) {
             state.finish(state.session, state.revision, state.actionId, "failed"); result("failed", reason);

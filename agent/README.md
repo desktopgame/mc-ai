@@ -1,5 +1,9 @@
 # Agent Daemon — Action lifecycle
 
+MOD 0.0.7では会話リクエストの `acceptIntent: true` に対応し、Socialモデルから構造化された返答と限定intentを受け取る。
+指定モデル・接続先・キー設定の変更は不要。intentの内容はゲーム側が受付順を確認して既存のGoal Managerへ送る。
+Socialの会話履歴をTacticalへ渡す経路は追加しない。詳細は [会話からの指示](../protocol/action-lifecycle.md#会話からの指示--007)。
+
 MOD 0.0.6向けに非同期の目的管理 `/v1/goal` と実行結果 `/v1/action-result` を追加した。
 起動引数・設定・キーは従来どおり。DecisionProviderの推論待ち中も取消・置換を受け付け、古い結果を採用しない。
 セッション最大32、推論worker1本、未開始の目的は各セッションの最新1件のみ。詳細は [行動ライフサイクル](../protocol/action-lifecycle.md)。

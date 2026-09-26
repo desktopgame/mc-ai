@@ -12,6 +12,7 @@ import java.util.UUID;
 /** Social work has its own bounded queue, independent of action/control traffic. */
 public final class PingBridge {
     private final PingClient client;
+    private final ActionBridge actions;
     private final ConversationQueue queue = new ConversationQueue();
     private MinecraftServer server;
     private EntityPlayerMP owner;
@@ -19,10 +20,10 @@ public final class PingBridge {
     private boolean inFlight;
     private volatile Completion completion;
     private static final class Completion {
-        final ConversationQueue.Turn turn; final String reply;
-        Completion(ConversationQueue.Turn turn, String reply) { this.turn = turn; this.reply = reply; }
+        final ConversationQueue.Turn turn; final PingClient.Reply reply; final long received = System.nanoTime();
+        Completion(ConversationQueue.Turn turn, PingClient.Reply reply) { this.turn = turn; this.reply = reply; }
     }
-    public PingBridge(String url) { client = new PingClient(url); }
+    public PingBridge(String url, ActionBridge actions) { client = new PingClient(url); this.actions = actions; }
     private void reset(EntityPlayerMP player) {
         queue.reset(); session = UUID.randomUUID().toString(); owner = player;
     }
@@ -39,7 +40,10 @@ public final class PingBridge {
             forgetSession = session; reset(event.player);
             reply("会話をリセットしました。待機中の発言と古い返答も取り消しました。");
         } else if (message.equals("!agent chat")) { reply("使い方: !agent chat メッセージ"); }
-        else if (!queue.offer(message)) { reply("会話の待機枠がいっぱいか、文章が長すぎます。少し待って短く送ってください。"); }
+        else if (message.startsWith("!agent chat ") && ImmediateStop.matches(message.substring(12))) {
+            actions.stopFromChat(event.player);
+        }
+        else if (!queue.offer(message, actions.captureIntent(event.player))) { reply("会話の待機枠がいっぱいか、文章が長すぎます。少し待って短く送ってください。"); }
         else { reply("受け付けました。"); }
     }
 
@@ -52,7 +56,11 @@ public final class PingBridge {
         Completion done = completion;
         if (done != null) {
             completion = null; inFlight = false;
-            if (done.turn != null && queue.current(done.turn)) { reply(done.reply); }
+            if (done.turn != null && queue.current(done.turn) && owner != null) {
+                if (done.reply.intent.equals("none")) { reply(done.reply.say); }
+                else if (System.nanoTime() - done.received > 5000000000L) { reply("時間が経過した指示は取り消しました。必要ならもう一度依頼してください。"); }
+                else if (actions.acceptIntent(owner, done.turn.intentTicket, done.reply.intent)) { reply(done.reply.say); }
+            }
         }
         if (inFlight || owner == null) { return; }
         final ConversationQueue.Turn turn = queue.poll();
@@ -63,13 +71,13 @@ public final class PingBridge {
         inFlight = true;
         Thread worker = new Thread(new Runnable() {
             @Override public void run() {
-                String answer = "応答を取得できませんでした。Daemon・モデル・接続設定を確認してください。";
+                PingClient.Reply answer = new PingClient.Reply("応答を取得できませんでした。Daemon・モデル・接続設定を確認してください。", "none");
                 try {
                     if (cleanup != null) {
                         try { client.turn(player, "!agent forget", cleanup); }
                         catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Old conversation cleanup unavailable"); }
                     }
-                    if (turn != null) { answer = client.turn(player, turn.text, conversation); }
+                    if (turn != null) { answer = client.socialTurn(player, turn.text, conversation); }
                 } catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Social turn failed ({})", e.getClass().getSimpleName()); }
                 finally { completion = new Completion(turn, answer); }
             }

@@ -1,5 +1,40 @@
 # Action lifecycle — MOD 0.0.6 / protocol 1
 
+## 会話からの指示 — 0.0.7
+
+`POST /v1/turn` の会話リクエストへ `acceptIntent: true` を指定すると、応答に `intent` を追加する。
+
+```json
+{"version":1,"session":"conversation-session","acceptIntent":true,"event":{"type":"player_chat","player":"owner","text":"!agent chat ついてきて"}}
+```
+
+```json
+{"version":1,"say":"追従の依頼を受け付けたよ。","intent":"follow_owner","actions":[]}
+```
+
+intentは `none / follow_owner / stop / look_at_owner` の固定文字列のみ。自由形式の操作・対象指定・コマンドは許可しない。
+従来クライアントのリクエストではintentを返さず、会話だけを行う。新クライアントは欠けた・不正なintentを拒否して何も実行しない。
+SocialはJSON schemaでreply/intentを生成し、Daemonで再検証する。世界状態や識別子はSocialへ渡さない。
+履歴は会話だけを保持し、intentの根拠は最後の発言だけとする。過去の指示を再実行しないようモデルへ指示する。
+代表的な否定・引用・条件表現等は、モデルがintentを出してもDaemonがnoneと固定説明へ置き換える。
+「止まらないで」「停止しないで」「そのまま続けて」（各「ください」付きも可）は全文一致で継続の了承を返し、モデルを呼ばずintentをnoneにする。会話FIFOの順序は維持する。
+任意の自然文に対する完全な意味判定ではない。未対応の依頼や複数の操作はnoneにする方針。
+
+Forgeは会話受付時の順序ticketを保持する。雑談は行動の順序境界を進めず、受理した行動intentと手動操作だけが進める。
+既に新しい指示を受理していれば、古いticketのintentとその返答を破棄する。
+新しい会話セッション、観測セッション、forget、失敗・切断時にも旧intentを実行しない。
+受理後は既存のgoalRevision/actionIdの検証に従う。Socialのreplyを実行結果として扱わない。
+
+`!agent chat` の本文全体が短い停止表現に一致する場合は、ローカルで停止して世代を更新する。
+この処理はSocialのFIFOを迂回し、モデルを呼ばず、待機列が満杯でも機能する。部分一致や引用・否定は対象外。
+対象表現は `ImmediateStop.java` に固定し、通常の会話・解釈・人格をForgeへ移さない。
+停止以外の自然文はSocialのFIFOで分類し、最新の受理したintentを優先する。
+
+0.0.7の追従修正: 近距離のfollow_ownerはstopへ変換せず、follow/owner_nearで追従状態を維持する。
+Forgeは2ブロック以内で足を止め、離れれば同じactionで移動を再開する。経路失敗は約1秒ごとの試行で3回連続まで待ち、途中の状態は観測result `path_retrying`、上限で `path_not_found` とする。
+
+以下は0.0.6から維持する実行API。
+
 既存の `/v1/turn` は会話専用（actionsは空）、`/v1/decision` は実行しない判断検証用として維持する。
 実行用に以下の2経路を追加した。両方8KiBまで、HTTP/JSONと既存のエラー形式を使用する。
 

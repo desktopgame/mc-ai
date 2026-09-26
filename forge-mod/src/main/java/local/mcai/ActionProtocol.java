@@ -49,6 +49,6 @@ public final class ActionProtocol {
         if (type.equals("stop")) { return true; }
         if (health <= 6) { return false; }
         if (type.equals("look")) { return "look_at_owner".equals(goal); }
-        return "follow_owner".equals(goal) && distanceSquared > 4 && distanceSquared <= 1024;
+        return "follow_owner".equals(goal) && distanceSquared >= 0 && distanceSquared <= 1024;
     }
 }

@@ -10,7 +10,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.Configuration;
 import org.apache.logging.log4j.LogManager;
 
-@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.6",
+@Mod(modid = CompanionMod.MOD_ID, name = "MC AI Companion", version = "0.0.7",
         acceptedMinecraftVersions = "[1.7.10]")
 public final class CompanionMod {
     public static final String MOD_ID = "mcaicompanion";
@@ -35,7 +35,7 @@ public final class CompanionMod {
         ActionBridge actions = new ActionBridge(daemonUrl, observations);
         MinecraftForge.EVENT_BUS.register(new CompanionCommands(actions));
         MinecraftForge.EVENT_BUS.register(actions);
-        PingBridge bridge = new PingBridge(daemonUrl);
+        PingBridge bridge = new PingBridge(daemonUrl, actions);
         MinecraftForge.EVENT_BUS.register(bridge);
         FMLCommonHandler.instance().bus().register(bridge);
         FMLCommonHandler.instance().bus().register(observations);

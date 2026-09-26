@@ -18,7 +18,8 @@ SYSTEM = (
     "Choose exactly one action from availableActions using only the supplied goal and state. "
     "The player is always the anonymous alias owner. Do not request or produce reasoning text. "
     "If health <= 6, choose stop with low_health. If goal is stop, choose stop with goal_stop. "
-    "For follow_owner: if owner is within 2 blocks choose stop/owner_near; "
+    "For follow_owner: if owner is within 2 blocks choose follow owner/owner_near, "
+    "keeping the follow task active so movement resumes when the owner moves away; "
     "if farther than 32 blocks choose stop/owner_out_of_range; otherwise follow owner/goal_follow. "
     "For look_at_owner choose look owner/goal_look. If the desired action is unavailable, "
     "choose stop/unavailable_action if available. Output only the specified JSON object."
@@ -102,7 +103,7 @@ def validate_decision(value, payload):
     goal = payload["goal"]["type"]
     if kind != "stop" and (payload["state"]["companion"]["health"] <= 6 or kind != GOALS[goal]):
         raise DecisionError("unsafe_or_mismatched_action")
-    if kind == "follow" and not 4 < distance_squared(payload) <= 1024:
+    if kind == "follow" and not 0 <= distance_squared(payload) <= 1024:
         raise DecisionError("unsafe_follow_distance")
     return copy.deepcopy(value)
 
@@ -115,7 +116,7 @@ class MockDecisionProvider:
         if payload["state"]["companion"]["health"] <= 6:
             action, reason = "stop", "low_health"
         elif action == "follow" and distance_squared(payload) <= 4:
-            action, reason = "stop", "owner_near"
+            reason = "owner_near"
         elif action == "follow" and distance_squared(payload) > 1024:
             action, reason = "stop", "owner_out_of_range"
         if action not in payload["availableActions"]:

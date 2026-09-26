@@ -35,12 +35,18 @@ def turn(payload, brain=None):
     message = text[len("!agent chat "):].strip()
     if text != "!agent forget" and (not message or len(message) > 512):
         raise ValueError("invalid_message")
+    if "acceptIntent" in payload and type(payload["acceptIntent"]) is not bool:
+        raise ValueError("invalid_capability")
     if brain is None:
         raise SocialError("social_not_configured")
     if text == "!agent forget":
         brain.forget((session, player))
         reply = "この会話の履歴を消しました。"
     else:
+        if payload.get("acceptIntent", False):
+            result = brain.chat((session, player), message, with_intent=True)
+            LOG.info("social intent=%s", result["intent"])
+            return {"version": 1, "say": result["reply"], "intent": result["intent"], "actions": []}
         reply = brain.chat((session, player), message)
     return {"version": 1, "say": reply, "actions": []}
 

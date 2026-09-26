@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from pathlib import Path
 from typing import Protocol
@@ -13,9 +15,46 @@ LOG = logging.getLogger("mcai.social")
 DEFAULT_PERSONA = (
     "あなたはMinecraftでプレイヤーと過ごすCompanionです。親しみやすく落ち着いた日本語で、"
     "通常は1～3文、160文字以内で返答してください。返答本文だけを出力し、思考過程は出力しません。"
-    "この段階では会話だけができます。世界を観測したりゲーム操作を実行したと偽らないでください。"
-    "移動の依頼には手動コマンド !agent follow / !agent stop を案内できます。"
+    "実際のゲーム状態は与えられていません。世界を観測したり操作を完了したと偽らないでください。"
 )
+INTENTS = ("none", "follow_owner", "stop", "look_at_owner")
+INTENT_INSTRUCTIONS = (
+    "返答は指定のJSONだけを出力してください。replyは短い日本語の返答、intentは最後のuser発言だけから選びます。"
+    "過去の会話にある依頼を再実行してはいけません。現在、実行できる目的は所有者への追従、停止、所有者への注視だけです。"
+    "直接あなたへ頼んでいる明確な現在の依頼なら、ついてきて→follow_owner、止まって→stop、こっちを見て→look_at_owner。"
+    "それ以外はnone。雑談、否定、引用、翻訳、質問、条件付き・仮定の話、第三者への指示、複数の操作の依頼、"
+    "あそこへ行く・物を見たり採掘する等の未対応操作、目的が曖昧な表現はnoneにして説明または確認してください。"
+    "例: こんにちは→none、止まらないで→none（今の動作を変えないと返答し、停止の確認をしない）、『ついてきて』という意味は？→none、"
+    "敵が来たら止まって→none、あの木を見て→none、鉄を取ってきて→none。"
+    "intentがある場合、replyは依頼を受け付ける返答にし、実行開始・成功を断定しないでください。"
+    "実行可否は後の別処理で決まります。自由形式のコマンドや操作パラメーターは出力しないでください。"
+)
+SOCIAL_SCHEMA = {"type": "object", "additionalProperties": False,
+                 "properties": {"reply": {"type": "string"}, "intent": {"type": "string", "enum": list(INTENTS)}},
+                 "required": ["reply", "intent"]}
+
+
+def allows_intent(text):
+    """Conservative additional guard; the model still classifies direct requests and targets."""
+    blocked = ("「", "」", "『", "』", '"', "“", "”", "`", "もし", "たら", "なら", "場合", "ときは", "時は",
+               "例えば", "たとえば", "って言", "と言", "と書", "意味", "翻訳", "教えて", "できる", "できます",
+               "しない", "来ない", "こない", "こなく", "見ない", "向かない", "止まらない", "止まらず", "やめない",
+               "きてから", "してから", "その後", "それから", "そして", "まず")
+    return not any(word in text for word in blocked) and not re.search(r"\b(if|not|never|don't|quote|translate)\b", text, re.I)
+
+
+def keep_current_request(text):
+    value = unicodedata.normalize("NFKC", text).strip().rstrip("!。 ")
+    return value in ("止まらないで", "止まらないでください", "停止しないで", "停止しないでください",
+                     "そのまま続けて", "そのまま続けてください")
+
+
+def validate_social_turn(value):
+    if not isinstance(value, dict) or set(value) != {"reply", "intent"}:
+        raise SocialError("invalid_social_turn")
+    if type(value["intent"]) is not str or value["intent"] not in INTENTS:
+        raise SocialError("invalid_intent")
+    return {"reply": validate_reply(value["reply"]), "intent": value["intent"]}
 
 
 class SocialError(Exception):
@@ -24,6 +63,7 @@ class SocialError(Exception):
 
 class SocialProvider(Protocol):
     def reply(self, messages: list[dict]) -> str: ...
+    def reply_with_intent(self, messages: list[dict]) -> dict: ...
 
 
 def validate_reply(value):
@@ -66,8 +106,17 @@ class LocalSocialProvider:
         self.opener = request.build_opener(request.ProxyHandler({}), NoRedirect())
 
     def reply(self, messages):
+        return self._reply(messages, False)
+
+    def reply_with_intent(self, messages):
+        return self._reply(messages, True)
+
+    def _reply(self, messages, with_intent):
         payload = {"model": self.model, "messages": messages, "stream": False,
-                   "temperature": 0.7, "max_tokens": self.max_tokens}
+                   "temperature": 0 if with_intent else 0.7, "max_tokens": self.max_tokens}
+        if with_intent:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "social_turn", "strict": True, "schema": SOCIAL_SCHEMA}}
         if self.reasoning_effort is not None:
             payload["reasoning_effort"] = self.reasoning_effort
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -85,7 +134,8 @@ class LocalSocialProvider:
             choice = parsed["choices"][0]
             if choice.get("finish_reason") != "stop" or choice["message"].get("tool_calls"):
                 raise SocialError("incomplete_or_tool_output")
-            result = validate_reply(choice["message"]["content"])
+            content = choice["message"]["content"]
+            result = validate_social_turn(json.loads(content)) if with_intent else validate_reply(content)
             usage = parsed.get("usage", {})
             # Size, latency and token counts only. Never dump content or credentials.
             LOG.info("provider=local model=%s duration_ms=%d input_bytes=%d output_bytes=%d prompt_tokens=%s completion_tokens=%s",
@@ -110,14 +160,24 @@ class SocialBrain:
         self.histories = OrderedDict()
         self.lock = threading.Lock()
 
-    def chat(self, session, text):
+    def chat(self, session, text, with_intent=False):
         # No unbounded inference queue; retain history only after a valid completed response.
         if not self.lock.acquire(blocking=False):
             raise SocialError("busy")
         try:
             history = self.histories.get(session, [])
-            messages = [{"role": "system", "content": self.persona}] + history + [{"role": "user", "content": text}]
-            reply = validate_reply(self.provider.reply(messages))
+            instructions = self.persona + ("\n" + INTENT_INSTRUCTIONS if with_intent else
+                                           "\nこの返答経路では会話のみで、操作を依頼する場合は !agent do follow / look / stop を案内してください。")
+            messages = [{"role": "system", "content": instructions}] + history + [{"role": "user", "content": text}]
+            if with_intent:
+                # No world state is available here: acknowledge unchanged behavior, never claim a task.
+                result = ({"reply": "わかった。今の動作は変えないよ。", "intent": "none"}
+                          if keep_current_request(text) else validate_social_turn(self.provider.reply_with_intent(messages)))
+                if result["intent"] != "none" and not allows_intent(text):
+                    result = {"reply": "その表現では操作を変更しません。今してほしい操作を、ひとつだけ直接依頼してください。", "intent": "none"}
+                reply = result["reply"]
+            else:
+                reply = validate_reply(self.provider.reply(messages))
             recent = (history + [{"role": "user", "content": text}, {"role": "assistant", "content": reply}])[-12:]
             while len(recent) > 2 and sum(len(item["content"]) for item in recent) > 4000:
                 recent = recent[2:]
@@ -125,7 +185,7 @@ class SocialBrain:
             self.histories.move_to_end(session)
             while len(self.histories) > 32:
                 self.histories.popitem(last=False)
-            return reply
+            return result if with_intent else reply
         finally:
             self.lock.release()
 

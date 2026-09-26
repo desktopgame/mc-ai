@@ -51,6 +51,20 @@ class DelayedProvider(MockDecisionProvider):
 
 
 class GoalTests(unittest.TestCase):
+    def test_nearby_follow_remains_running_until_cancelled(self):
+        states, manager = self.create()
+        data = snapshot(); data["sequence"] = 1; data["state"]["owner"]["position"] = [1, 64, 0]
+        states.update(data, True)
+        ready = wait_for(manager, request())
+        self.assertEqual(ready["action"]["decision"]["action"], "follow")
+        self.report(manager, ready, "running")
+        data["sequence"] = 2; data["state"]["owner"]["position"] = [8, 64, 0]
+        data["state"]["companion"]["task"] = "follow"
+        data["state"]["companion"]["result"] = "path_retrying"
+        states.update(data, True)
+        self.assertEqual(manager.update(request())["status"], "running")
+        self.assertEqual(manager.update(request(2, None))["status"], "idle")
+
     def create(self, provider=None, clock=time.monotonic):
         states = StateCache(clock=clock); states.update(snapshot(), True)
         manager = GoalManager(states, DecisionService(provider or MockDecisionProvider()), clock=clock)

@@ -40,7 +40,7 @@ class DecisionTests(unittest.TestCase):
         for x, reason in [(1, "owner_near"), (40, "owner_out_of_range")]:
             payload["state"]["owner"]["position"][0] = x
             result = service.decide(payload)
-            self.assertEqual(result["decision"], {"action": "stop"})
+            self.assertEqual(result["decision"], {"action": "follow", "target": "owner"} if x <= 2 else {"action": "stop"})
             self.assertEqual(result["reasonCode"], reason)
         payload["state"]["companion"]["health"] = 4
         self.assertEqual(service.decide(payload)["reasonCode"], "low_health")

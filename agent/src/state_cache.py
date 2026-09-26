@@ -42,7 +42,7 @@ def hostile(value):
 
 TASKS = ("idle", "follow", "look")
 RESULTS = ("none", "stopped", "following", "looking", "near_owner", "owner_unavailable",
-           "look_completed", "companion_died", "owner_out_of_range", "path_not_found")
+           "look_completed", "companion_died", "owner_out_of_range", "path_not_found", "path_retrying")
 
 
 def task(value):

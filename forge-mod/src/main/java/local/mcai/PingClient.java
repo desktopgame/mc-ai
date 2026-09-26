@@ -15,6 +15,19 @@ public final class PingClient {
     }
 
     public String turn(String player, String text, String session) throws IOException {
+        return requestTurn(player, text, session, false).say;
+    }
+
+    public static final class Reply {
+        public final String say, intent;
+        Reply(String say, String intent) { this.say = say; this.intent = intent; }
+    }
+
+    public Reply socialTurn(String player, String text, String session) throws IOException {
+        return requestTurn(player, text, session, text.startsWith("!agent chat "));
+    }
+
+    private Reply requestTurn(String player, String text, String session, boolean withIntent) throws IOException {
         URL url = new URL(baseUrl.replaceAll("/+$", "") + "/v1/turn");
         if (!(url.getProtocol().equals("http") || url.getProtocol().equals("https"))
                 || url.getUserInfo() != null || url.getQuery() != null || url.getRef() != null) {
@@ -35,6 +48,7 @@ public final class PingClient {
         request.addProperty("version", 1);
         request.add("event", event);
         if (session != null) { request.addProperty("session", session); }
+        if (withIntent) { request.addProperty("acceptIntent", true); }
         byte[] payload = request.toString().getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(payload.length);
         try {
@@ -50,7 +64,8 @@ public final class PingClient {
                     if (out.size() + count > 8192) { throw new IOException("Response too large"); }
                     out.write(buffer, 0, count);
                 }
-                return parseReply(new String(out.toByteArray(), StandardCharsets.UTF_8));
+                String raw = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                return withIntent ? parseSocialReply(raw) : new Reply(parseReply(raw), "none");
             }
         } finally { connection.disconnect(); }
     }
@@ -70,5 +85,18 @@ public final class PingClient {
         } catch (RuntimeException error) {
             throw new IOException("Malformed daemon response", error);
         }
+    }
+
+    static Reply parseSocialReply(String text) throws IOException {
+        String say = parseReply(text);
+        try {
+            JsonObject o = new JsonParser().parse(text).getAsJsonObject();
+            if (o.entrySet().size() != 4) { throw new IOException("Unexpected social fields"); }
+            String intent = ActionProtocol.string(o, "intent");
+            if (!(intent.equals("none") || intent.equals("follow_owner") || intent.equals("stop") || intent.equals("look_at_owner"))) {
+                throw new IOException("Unsupported intent");
+            }
+            return new Reply(say, intent);
+        } catch (RuntimeException e) { throw new IOException("Malformed social intent", e); }
     }
 }
