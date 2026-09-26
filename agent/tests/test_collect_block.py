@@ -87,12 +87,27 @@ class CollectBlockTests(unittest.TestCase):
         self.assertEqual(view["status"], "running")
         self.assertEqual(view["skill"]["progress"], {"requested": 1, "acquired": 0, "mined": 1, "complete": True})
         self.assertIsNone(view["action"])
+        # No newer observation at all by the deadline: the cache stopped updating (stale_state).
         self.now[0] = DROP_WINDOW + 1
         manager.tick()
         view = manager.update(goal(1, count=1, epoch=self.epoch))
         self.assertEqual(view["status"], "failed")
-        self.assertEqual(view["skill"]["result"]["reason"], "drop_unavailable")
+        self.assertEqual(view["skill"]["result"]["reason"], "stale_state")
         self.assertEqual(view["skill"]["result"]["progress"], {"requested": 1, "acquired": 0, "mined": 1, "complete": True})
+
+    def test_newer_observation_without_drop_is_drop_unavailable(self):
+        states, manager = self.create()
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=1)["action"]
+        manager.result(self.mine(action, "succeeded", "completed", 1))
+        # A newer observation arrives but there is no matching item.
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=2), True)
+        view = manager.update(goal(1, count=1, epoch=self.epoch))
+        self.assertEqual(view["status"], "running")
+        self.now[0] = DROP_WINDOW + 1
+        manager.tick()
+        view = manager.update(goal(1, count=1, epoch=self.epoch))
+        self.assertEqual(view["skill"]["result"]["reason"], "drop_unavailable")
 
     def test_mine_then_pickup_completes_with_both_counters(self):
         states, manager = self.create()
@@ -279,6 +294,136 @@ class CollectBlockTests(unittest.TestCase):
             action = manager.update(goal(1, count=1, epoch=self.epoch))["action"]
         view = manager.update(goal(1, count=1, epoch=self.epoch))
         self.assertEqual(view["skill"]["result"]["reason"], "retry_exhausted")
+
+    # ---- descriptor-based receipt validation -----------------------------
+    def settled_pickup(self, manager, states, count=2):
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=count)["action"]
+        self.assertEqual(action["type"], "pickup_target")
+        manager.result(self.pickup(action, "running", "accepted", 0))
+        manager.result(self.pickup(action, "succeeded", "completed", 1))
+        return action
+
+    def test_settled_receipt_descriptor_mismatches(self):
+        states, manager = self.create()
+        action = self.settled_pickup(manager, states)
+        with self.assertRaises(SkillSyncError):   # actionSequence mismatch
+            manager.result(dict(self.pickup(action, "succeeded", "completed", 1), actionSequence=99))
+        with self.assertRaises(SkillSyncError):   # destroyed payload for a pickup action
+            manager.result(self.mine(action, "succeeded", "completed", 1))
+        with self.assertRaises(SkillSyncError):   # target canonical id mismatch
+            manager.result({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
+                            "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                            "actionSequence": action["actionSequence"], "status": "succeeded", "reason": "completed",
+                            "acquired": {"item": "minecraft:cobblestone", "count": 1}})
+        with self.assertRaises(SkillSyncError):   # conflicting terminal reason
+            manager.result(self.pickup(action, "failed", "target_lost", 0))
+
+    def test_settled_mine_rejects_acquired_payload(self):
+        states, manager = self.create()
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=1)["action"]
+        manager.result(self.mine(action, "running", "accepted", 0))
+        manager.result(self.mine(action, "succeeded", "completed", 1))
+        with self.assertRaises(SkillSyncError):
+            manager.result(self.pickup(action, "succeeded", "completed", 1))
+
+    def test_succeeded_count_and_reason_are_strict(self):
+        states, manager = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        manager.result(self.pickup(action, "running", "accepted", 0))
+        with self.assertRaises(SkillSyncError):   # succeeded count 0
+            manager.result(self.pickup(action, "succeeded", "completed", 0))
+        with self.assertRaises(SkillSyncError):   # succeeded reason must be completed
+            manager.result(self.pickup(action, "succeeded", "stopped", 1))
+        with self.assertRaises(SkillSyncError):   # over maxCount
+            manager.result(self.pickup(action, "succeeded", "completed", 6))
+        self.assertEqual(manager.result(self.pickup(action, "succeeded", "completed", 1)), {"version": 2, "accepted": True})
+
+    def test_late_running_after_settle_is_acked_and_does_not_move_progress(self):
+        states, manager = self.create()
+        action = self.settled_pickup(manager, states)
+        self.assertEqual(manager.result(self.pickup(action, "running", "accepted", 0)), {"version": 2, "accepted": True})
+        status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                 "skillInstanceId": action["skillInstanceId"]})
+        self.assertEqual(status["skill"]["progress"]["acquired"], 1)
+
+    def test_terminal_skill_receipts_still_use_the_descriptor(self):
+        states, manager = self.create()
+        action = self.settled_pickup(manager, states)
+        manager.update({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 2, "goal": None})
+        # A duplicate of the settled terminal is ACK only; a conflicting one is rejected.
+        self.assertEqual(manager.result(self.pickup(action, "succeeded", "completed", 1)), {"version": 2, "accepted": True})
+        with self.assertRaises(SkillSyncError):
+            manager.result(self.pickup(action, "succeeded", "completed", 2))
+        with self.assertRaises(SkillSyncError):
+            manager.result(dict(self.pickup(action, "succeeded", "completed", 1), actionSequence=42))
+
+    # ---- stage deadlines -------------------------------------------------
+    def test_wait_drop_deadline_is_fixed_and_not_extended_by_polls(self):
+        states, manager = self.create()
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=1)["action"]
+        manager.result(self.mine(action, "succeeded", "completed", 1))
+        skill = manager.active["world"]
+        deadline = skill.wait_deadline
+        self.assertAlmostEqual(deadline, DROP_WINDOW)
+        for poll in (2.0, 4.0, 5.9):
+            self.now[0] = poll
+            self.assertEqual(manager.update(goal(1, count=1, epoch=self.epoch))["status"], "running")
+            self.assertEqual(skill.wait_deadline, deadline)
+        self.now[0] = DROP_WINDOW
+        manager.tick()
+        self.assertEqual(manager.update(goal(1, count=1, epoch=self.epoch))["skill"]["result"]["reason"], "stale_state")
+
+    def test_newer_observation_boundary_is_drop_unavailable(self):
+        states, manager = self.create()
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=1)["action"]
+        manager.result(self.mine(action, "succeeded", "completed", 1))
+        states.update(snapshot(blocks={"block-a": block(4)}, seq=2), True)
+        self.now[0] = DROP_WINDOW - 0.1
+        self.assertEqual(manager.update(goal(1, count=1, epoch=self.epoch))["status"], "running")
+        self.now[0] = DROP_WINDOW
+        manager.tick()
+        self.assertEqual(manager.update(goal(1, count=1, epoch=self.epoch))["skill"]["result"]["reason"], "drop_unavailable")
+
+    def test_recovery_deadline_is_not_extended_by_candidate_churn_and_never_mines(self):
+        states, manager = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, blocks={"block-x": block(6)}, seq=1), True)
+        first = self.accept(manager, 1, count=5)["action"]
+        manager.result(self.pickup(first, "succeeded", "completed", 2))
+        states.update(snapshot(blocks={"block-x": block(6)}, seq=2), True)
+        mine = manager.update(goal(1, count=5, epoch=self.epoch))["action"]
+        manager.result(self.mine(mine, "succeeded", "completed", 1))
+        states.update(snapshot(items={"item-b": drop(4)}, seq=3), True)
+        recover1 = manager.update(goal(1, count=5, epoch=self.epoch))["action"]
+        self.assertEqual(recover1["type"], "pickup_target")
+        manager.result(self.pickup(recover1, "failed", "target_lost", 0))
+        skill = manager.active["world"]
+        deadline = skill.recover_deadline
+        self.assertIsNotNone(deadline)
+        # A different drop appears; the Skill may try it but the recovery deadline is unchanged.
+        states.update(snapshot(items={"item-c": drop(4)}, blocks={"block-y": block(6)}, seq=4), True)
+        recover2 = manager.update(goal(1, count=5, epoch=self.epoch))["action"]
+        self.assertEqual(recover2["type"], "pickup_target")
+        manager.result(self.pickup(recover2, "failed", "target_lost", 0))
+        self.assertEqual(skill.recover_deadline, deadline)
+        # With only a block available, recovery must never fall back to mining.
+        states.update(snapshot(blocks={"block-y": block(6)}, seq=5), True)
+        self.assertIsNone(manager.update(goal(1, count=5, epoch=self.epoch))["action"])
+        self.now[0] = deadline
+        manager.tick()
+        self.assertEqual(manager.update(goal(1, count=5, epoch=self.epoch))["skill"]["result"]["reason"], "drop_unavailable")
+
+    def test_skill_total_deadline_still_caps_everything(self):
+        states, manager = self.create()
+        view = self.accept(manager, 1, count=1)
+        self.assertIsNone(view["action"])
+        self.now[0] = 121.0
+        manager.tick()
+        self.assertEqual(manager.update(goal(1, count=1, epoch=self.epoch))["skill"]["result"]["reason"], "expired")
 
 
 if __name__ == "__main__":

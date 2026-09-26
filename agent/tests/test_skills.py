@@ -196,9 +196,9 @@ class SkillTests(unittest.TestCase):
         conflict = dict(body, acquired={"item": "minecraft:log", "count": 1})
         with self.assertRaises(SkillSyncError):
             manager.result(conflict)
+        # A late running for an already-settled action is a valid observation but changes nothing.
         late = dict(body, status="running", reason="accepted", acquired={"item": "minecraft:log", "count": 0})
-        with self.assertRaises(SkillSyncError):
-            manager.result(late)
+        self.assertEqual(manager.result(late), {"version": 2, "accepted": True})
         unknown = dict(body, actionId="not-issued", actionSequence=99)
         with self.assertRaises(SkillSyncError):
             manager.result(unknown)

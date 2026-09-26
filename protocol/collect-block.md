@@ -9,7 +9,10 @@
 - **実装済み（Daemon）**: §4 の `/v2/goal` collect_block解析・`COLLECT_BLOCK_TARGETS`・capability `collect_block_v1`、
   §5 の progress/result（`acquired`/`mined`/`complete`）、§6 の action descriptor 台帳（payloadFieldで精算、混合action）、
   §7 の `select_source / wait_drop / recover_drop` stage machine、§8 の `drop_unavailable`。`collect_drop`/`mine` の互換維持。
-  回帰テストは `agent/tests/test_collect_block.py`（16件）＋既存 `test_skills.py`。Python 107件。
+  §6 のreceipt検証は descriptor基準で共通化（sequence/payload種類/target ID/count上限、running/succeeded/failed/cancelledの
+  reason・count固定、terminal Skillでも同一検証、late runningはACKのみ）。§7 の wait_drop/recover_drop は stage固有の
+  絶対deadline（mine receipt＋6秒 / 最初のrecovery失敗＋6秒）で、poll・候補入れ替えで延長しない。
+  回帰テストは `agent/tests/test_collect_block.py`（26件）＋既存 `test_skills.py`。Python 117件。
 - **未実装（次増分 / MOD 0.0.21予定）**: Forge側（§10 の Forge行、§11 UI、capability確認、新しい入口
   `!agent do collect_block minecraft:log <n>`）、§6 のForge descriptor照合、§13 のForge/統合・実ゲームテスト。
   Daemonは capability を広告済みのため、Forgeは capability を確認してから新goalを送る必要がある（未対応Daemonへ

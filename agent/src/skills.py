@@ -199,8 +199,9 @@ class CollectBlock(Skill):
         self.excluded_blocks = set()
         self.excluded_items = set()
         self.wait_started = None
+        self.wait_deadline = None         # absolute: mine terminal receipt + DROP_WINDOW
         self.wait_sequence = None
-        self.recover_failed_at = None
+        self.recover_deadline = None      # absolute: first recovery pickup failure + DROP_WINDOW
 
     def target_id(self):
         return self.block_target
@@ -219,17 +220,18 @@ class CollectBlock(Skill):
             self.mined_blocks.add(descriptor["candidateKey"])
             self.stage = "wait_drop"
             self.wait_started = now
+            self.wait_deadline = now + DROP_WINDOW
             self.wait_sequence = descriptor["observationSequence"]
         else:
             self.stage = "select_source"
-            self.recover_failed_at = None
+            self.recover_deadline = None
 
     def on_action_failed(self, descriptor, reason, now):
         if descriptor["payloadField"] == "block":
             self.stage = "select_source"
         else:
-            if self.recover_failed_at is None:
-                self.recover_failed_at = now
+            if self.recover_deadline is None:
+                self.recover_deadline = now + DROP_WINDOW
             self.stage = "recover_drop"
 
     def _item_candidates(self, state):
@@ -583,47 +585,61 @@ class SkillManager:
             return
         now = self.clock()
         cached = self._cache(skill.session)
+        # wait_drop / recover_drop use their own absolute stage deadline; the generic freshness fence
+        # must not silently add another SEARCH_WINDOW on top of it.
+        if skill.stage == "wait_drop":
+            self._wait_drop(skill, cached, now)
+            return
+        if skill.stage == "recover_drop":
+            self._recover_drop(skill, cached, now)
+            return
         if not self._fence_ready(skill, cached, now):
             return
         if cached["stale"]:
             self._searching_collect(skill, now, fresh=False)
             return
         state = cached["state"]
-        if skill.stage == "select_source":
-            items = sorted(skill._item_candidates(state))
-            if items:
-                self._try_issue(skill, items[0][1], cached["sequence"], now,
-                                ("pickup_target", "item", skill.item_target, min(skill.requested - skill.acquired, 64)))
-                return
-            if skill.mined < skill.requested:
-                blocks = sorted(skill._block_candidates(state))
-                if blocks:
-                    self._try_issue(skill, blocks[0][1], cached["sequence"], now,
-                                    ("mine_target", "block", skill.block_target, 1))
-                    return
-            self._searching_collect(skill, now, fresh=True)
-            return
-        if skill.stage == "wait_drop":
-            if cached["sequence"] > (skill.wait_sequence or -1):
-                items = sorted(skill._item_candidates(state))
-                if items:
-                    skill.stage = "recover_drop"
-                    skill.recover_failed_at = None
-                    self._try_issue(skill, items[0][1], cached["sequence"], now,
-                                    ("pickup_target", "item", skill.item_target, min(skill.requested - skill.acquired, 64)))
-                    return
-            if skill.wait_started is not None and now - skill.wait_started > DROP_WINDOW:
-                self._finalize(skill, "failed", "drop_unavailable")
-            return
-        # recover_drop
         items = sorted(skill._item_candidates(state))
         if items:
             self._try_issue(skill, items[0][1], cached["sequence"], now,
                             ("pickup_target", "item", skill.item_target, min(skill.requested - skill.acquired, 64)))
             return
-        if skill.recover_failed_at is None:
-            skill.recover_failed_at = now
-        if now - skill.recover_failed_at > DROP_WINDOW:
+        if skill.mined < skill.requested:
+            blocks = sorted(skill._block_candidates(state))
+            if blocks:
+                self._try_issue(skill, blocks[0][1], cached["sequence"], now,
+                                ("mine_target", "block", skill.block_target, 1))
+                return
+        self._searching_collect(skill, now, fresh=True)
+
+    def _wait_drop(self, skill, cached, now):
+        # A newer, non-stale observation that arrived after the mine is the only thing that can move
+        # this stage; the deadline itself is fixed at the mine receipt and polls never extend it.
+        newer = (not cached["stale"]) and cached["sequence"] > (skill.wait_sequence if skill.wait_sequence is not None else -1)
+        if newer:
+            items = sorted(skill._item_candidates(cached["state"]))
+            if items:
+                skill.stage = "recover_drop"
+                skill.recover_deadline = None
+                self._try_issue(skill, items[0][1], cached["sequence"], now,
+                                ("pickup_target", "item", skill.item_target, min(skill.requested - skill.acquired, 64)))
+                return
+        if skill.wait_deadline is not None and now >= skill.wait_deadline:
+            # A fresh newer observation without the item is a real "nothing dropped" result; with no
+            # newer observation at all we only know the cache stopped updating.
+            self._finalize(skill, "failed", "drop_unavailable" if newer else "stale_state")
+
+    def _recover_drop(self, skill, cached, now):
+        # Recovery never mines again until a pickup succeeds; the deadline is fixed at the first
+        # recovery failure and is not extended by candidate churn.
+        items = [] if cached["stale"] else sorted(skill._item_candidates(cached["state"]))
+        if items:
+            self._try_issue(skill, items[0][1], cached["sequence"], now,
+                            ("pickup_target", "item", skill.item_target, min(skill.requested - skill.acquired, 64)))
+            return
+        if skill.recover_deadline is None:
+            skill.recover_deadline = now + DROP_WINDOW
+        if now >= skill.recover_deadline:
             self._finalize(skill, "failed",
                            "path_not_found" if skill.saw_path_failure else "drop_unavailable")
 
@@ -646,42 +662,60 @@ class SkillManager:
             self._finalize(skill, "failed", skill.not_found_reason)
 
     # ---- receipts --------------------------------------------------------
-    def _apply_result(self, skill, parsed):
+    def _validate_receipt(self, descriptor, parsed):
+        """Descriptor-based validation common to current, settled and terminal receipts.
+
+        actionId is resolved to its immutable descriptor first, so a wrong sequence, payload kind,
+        target canonical id, count or status/reason pair is `conflicting_result` even for duplicates.
+        """
         payload = parsed["payload"]
-        if skill.phase == "terminal":
-            # The terminal result is immutable. A known receipt is ACKed and recorded only.
-            recorded = skill.settled.get(parsed["actionId"])
-            if recorded is not None:
-                if recorded["status"] != parsed["status"] or recorded["reason"] != parsed["reason"] \
-                        or recorded["count"] != payload["count"]:
-                    raise SkillSyncError("conflicting_result")
-                return
-            descriptor = skill.descriptors.get(parsed["actionId"])
-            if descriptor is None:
-                raise SkillSyncError("unknown_action")
-            if parsed["payload_kind"] != descriptor["payloadField"] or payload["id"] != descriptor["name"]:
+        if parsed["actionSequence"] != descriptor["sequence"]:
+            raise SkillSyncError("conflicting_result")
+        if parsed["payload_kind"] != descriptor["payloadField"]:
+            raise SkillSyncError("conflicting_result")
+        if payload["id"] != descriptor["name"]:
+            raise SkillSyncError("conflicting_result")
+        status, reason, count = parsed["status"], parsed["reason"], payload["count"]
+        if status == "running":
+            if reason != "accepted" or count != 0:
                 raise SkillSyncError("conflicting_result")
+        elif status == "succeeded":
+            if reason != "completed" or not 1 <= count <= descriptor["maxCount"]:
+                raise SkillSyncError("conflicting_result")
+        elif count != 0:   # failed / cancelled
+            raise SkillSyncError("conflicting_result")
+
+    @staticmethod
+    def _settled_matches(recorded, parsed):
+        return recorded["status"] == parsed["status"] and recorded["reason"] == parsed["reason"] \
+            and recorded["count"] == parsed["payload"]["count"]
+
+    def _apply_result(self, skill, parsed):
+        descriptor = skill.descriptors.get(parsed["actionId"])
+        if descriptor is None:
+            raise SkillSyncError("unknown_action")
+        self._validate_receipt(descriptor, parsed)
+        recorded = skill.settled.get(parsed["actionId"])
+        if recorded is not None:
+            # A duplicate terminal is ACKed; a conflicting terminal is rejected; a late running never
+            # resurrects state but is still a valid (if pointless) observation of the same action.
+            if parsed["status"] == "running" or self._settled_matches(recorded, parsed):
+                return
+            raise SkillSyncError("conflicting_result")
+        if skill.phase == "terminal":
+            # The terminal result is immutable: record a late known receipt but change no progress.
             if parsed["status"] != "running":
                 skill.settled[parsed["actionId"]] = {"status": parsed["status"], "reason": parsed["reason"],
-                                                     "count": payload["count"]}
+                                                     "count": parsed["payload"]["count"]}
             return
         current = skill.current
-        if current is None or current["actionId"] != parsed["actionId"] \
-                or current["sequence"] != parsed["actionSequence"]:
-            if parsed["actionId"] in skill.settled:
-                recorded = skill.settled[parsed["actionId"]]
-                if recorded["status"] == parsed["status"] and recorded["count"] == payload["count"]:
-                    return
-                raise SkillSyncError("conflicting_result")
-            raise SkillSyncError("unknown_action")
-        if parsed["payload_kind"] != current["payloadField"] or payload["id"] != current["name"]:
-            raise SkillSyncError("conflicting_result")
         if parsed["status"] == "running":
-            current["running"] = True
+            if current is not None and current["actionId"] == parsed["actionId"]:
+                current["running"] = True
             return
-        count = payload["count"]
-        if parsed["status"] == "succeeded" and count > current["maxCount"]:
-            raise SkillSyncError("conflicting_result")
+        if current is None or current["actionId"] != parsed["actionId"]:
+            raise SkillSyncError("unknown_action")
+        count = parsed["payload"]["count"]
         now = self.clock()
         field = current["payloadField"]
         cache_key = current["candidateKey"]
