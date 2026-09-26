@@ -3,15 +3,18 @@ package local.mcai;
 import com.google.gson.*;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
+import net.minecraft.block.Block;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityList;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.monster.IMob;
 import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.init.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.util.MathHelper;
 import org.apache.logging.log4j.LogManager;
 import java.io.*;
 import java.net.*;
@@ -140,7 +143,7 @@ public final class ObservationBridge {
 
     private JsonObject capture(EntityPlayerMP player) {
         JsonObject state = new JsonObject(), owner = new JsonObject(), inventory = new JsonObject(),
-                hostiles = new JsonObject(), items = new JsonObject();
+                hostiles = new JsonObject(), items = new JsonObject(), blocks = new JsonObject();
         state.addProperty("dimension", player.dimension);
         owner.add("position", position(player)); owner.addProperty("health", player.getHealth());
         for (ItemStack stack : player.inventory.mainInventory) { addItem(inventory, stack); }
@@ -194,8 +197,45 @@ public final class ObservationBridge {
                 value2.addProperty("distance", Math.floor(drop.getDistanceToEntity(companion) / 2) * 2);
                 items.add("item-" + drop.getUniqueID().toString(), value2);
             }
+            // Bounded mine-candidate observation: allowlisted blocks near the companion, never a voxel map.
+            final int cx = MathHelper.floor_double(companion.posX), cy = MathHelper.floor_double(companion.posY),
+                    cz = MathHelper.floor_double(companion.posZ);
+            List<BlockCandidate> mineable = new ArrayList<BlockCandidate>();
+            for (int dx = -16; dx <= 16; dx++) {
+                for (int dz = -16; dz <= 16; dz++) {
+                    for (int dy = -8; dy <= 8; dy++) {
+                        int x = cx + dx, y = cy + dy, z = cz + dz;
+                        if (y < 1 || y > 254 || !companion.worldObj.blockExists(x, y, z)) { continue; }
+                        Block b = companion.worldObj.getBlock(x, y, z);
+                        if (b == Blocks.air) { continue; }
+                        Object name = Block.blockRegistry.getNameForObject(b);
+                        if (name == null) { continue; }
+                        String key = name.toString();
+                        if (!SkillProtocol.BLOCKS.contains(key)) { continue; }
+                        double distance = companion.getDistanceSq(x + 0.5D, y + 0.5D, z + 0.5D);
+                        if (distance > CompanionEntity.ITEM_RANGE_SQUARED) { continue; }
+                        mineable.add(new BlockCandidate(x, y, z, distance, key));
+                    }
+                }
+            }
+            Collections.sort(mineable, new Comparator<BlockCandidate>() {
+                @Override public int compare(BlockCandidate a, BlockCandidate b) { return Double.compare(a.distance, b.distance); }
+            });
+            for (int i = 0; i < Math.min(16, mineable.size()); i++) {
+                BlockCandidate candidate = mineable.get(i); JsonObject value2 = new JsonObject();
+                value2.addProperty("type", candidate.name.replaceAll("[^A-Za-z0-9_.:-]", "_"));
+                value2.addProperty("distance", Math.floor(Math.sqrt(candidate.distance) / 2) * 2);
+                blocks.add("block-" + candidate.x + "_" + candidate.y + "_" + candidate.z, value2);
+            }
         }
-        state.add("hostiles", hostiles); state.add("items", items); return state;
+        state.add("hostiles", hostiles); state.add("items", items); state.add("blocks", blocks); return state;
+    }
+
+    private static final class BlockCandidate {
+        final int x, y, z; final double distance; final String name;
+        BlockCandidate(int x, int y, int z, double distance, String name) {
+            this.x = x; this.y = y; this.z = z; this.distance = distance; this.name = name;
+        }
     }
 
     private void addItem(JsonObject inventory, ItemStack stack) {

@@ -49,11 +49,22 @@ def dropped_item(value):
     return {"type": kind, "distance": number(value["distance"], 0, 16)}
 
 
-TASKS = ("idle", "follow", "look", "pickup", "deposit")
+def block_candidate(value):
+    """A mineable block candidate near the companion. Only registry name and rounded distance."""
+    if not isinstance(value, dict) or set(value) != {"type", "distance"}:
+        raise ValueError("invalid_block")
+    kind = value["type"]
+    if not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", kind):
+        raise ValueError("invalid_block_type")
+    return {"type": kind, "distance": number(value["distance"], 0, 16)}
+
+
+TASKS = ("idle", "follow", "look", "pickup", "deposit", "mine")
 RESULTS = ("none", "stopped", "following", "looking", "near_owner", "owner_unavailable",
            "look_completed", "companion_died", "owner_out_of_range", "path_not_found", "path_retrying",
            "picking_up", "pickup_completed", "no_item_in_range", "inventory_full",
-           "depositing", "deposit_completed", "inventory_empty", "owner_inventory_full")
+           "depositing", "deposit_completed", "inventory_empty", "owner_inventory_full",
+           "mining", "mine_completed", "no_block_in_range", "tool_unavailable")
 
 
 def task(value):
@@ -63,7 +74,7 @@ def task(value):
 
 
 def validate_state(value):
-    if not isinstance(value, dict) or set(value) != {"dimension", "owner", "companion", "hostiles", "items"}:
+    if not isinstance(value, dict) or set(value) != {"dimension", "owner", "companion", "hostiles", "items", "blocks"}:
         raise ValueError("invalid_state")
     dimension = value["dimension"]
     if type(dimension) is not int or not -2147483648 <= dimension <= 2147483647:
@@ -84,10 +95,14 @@ def validate_state(value):
     items = value["items"]
     if not isinstance(items, dict) or len(items) > 16:
         raise ValueError("invalid_items")
+    blocks = value["blocks"]
+    if not isinstance(blocks, dict) or len(blocks) > 16:
+        raise ValueError("invalid_blocks")
     return {"dimension": dimension,
             "owner": {"position": position(owner["position"]), "health": health(owner["health"]), "inventory": inventory(owner["inventory"])},
             "companion": companion, "hostiles": {identity(k): hostile(v) for k, v in hostiles.items()},
-            "items": {identity(k): dropped_item(v) for k, v in items.items()}}
+            "items": {identity(k): dropped_item(v) for k, v in items.items()},
+            "blocks": {identity(k): block_candidate(v) for k, v in blocks.items()}}
 
 
 def apply_event(state, event):
@@ -139,6 +154,17 @@ def apply_event(state, event):
         key = identity(event["id"])
         if key not in state["items"]: raise SyncError("item_mismatch")
         del state["items"][key]
+    elif kind in ("block_entered_range", "block_updated"):
+        if set(event) != {"type", "id", "observation"}: raise ValueError("invalid_block_event")
+        key = identity(event["id"])
+        if (key in state["blocks"]) != (kind == "block_updated"):
+            raise SyncError("block_mismatch")
+        state["blocks"][key] = block_candidate(event["observation"])
+    elif kind == "block_left_range":
+        if set(event) != {"type", "id"}: raise ValueError("invalid_block_event")
+        key = identity(event["id"])
+        if key not in state["blocks"]: raise SyncError("block_mismatch")
+        del state["blocks"][key]
     else:
         raise ValueError("unknown_event")
 

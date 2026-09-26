@@ -32,15 +32,17 @@ public final class ObservationDiff {
             if (!old.get("task").equals(now.get("task")) || !old.get("result").equals(now.get("result"))) {
                 String result = now.get("result").getAsString();
                 String type = (result.equals("look_completed") || result.equals("pickup_completed")
-                               || result.equals("deposit_completed")) ? "task_completed"
+                               || result.equals("deposit_completed") || result.equals("mine_completed")) ? "task_completed"
                         : (result.equals("path_not_found") || result.equals("owner_unavailable") || result.equals("owner_out_of_range")
                            || result.equals("no_item_in_range") || result.equals("inventory_full")
-                           || result.equals("inventory_empty") || result.equals("owner_inventory_full")) ? "task_failed" : "task_changed";
+                           || result.equals("inventory_empty") || result.equals("owner_inventory_full")
+                           || result.equals("no_block_in_range") || result.equals("tool_unavailable")) ? "task_failed" : "task_changed";
                 JsonObject event = event(type); event.add("task", now.get("task")); event.add("result", now.get("result"));
             }
         }
         sightings(previous, "hostiles", "hostile");
         sightings(previous, "items", "item");
+        sightings(previous, "blocks", "block");
     }
     private void inventory(String entity, JsonObject before, JsonObject after) {
         if (before.equals(after)) { return; }

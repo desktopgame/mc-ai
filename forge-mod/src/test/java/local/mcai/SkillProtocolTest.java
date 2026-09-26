@@ -24,7 +24,7 @@ public class SkillProtocolTest {
         SkillProtocol.Skill skill = SkillProtocol.skill(o);
         assertEquals("skill-1", skill.skillInstanceId);
         assertEquals(5, skill.requested);
-        assertEquals(2, skill.acquired);
+        assertEquals(2, skill.achieved);
         assertNull(skill.resultStatus);
         SkillProtocol.Action action = SkillProtocol.action(o);
         assertEquals("action-3", action.actionId);
@@ -47,6 +47,27 @@ public class SkillProtocolTest {
         assertEquals("completed", parsed.resultStatus);
         assertEquals("completed", parsed.resultReason);
         assertNull(SkillProtocol.action(o));
+    }
+
+    @Test public void parsesAMineViewAndAction() {
+        JsonObject o = new JsonParser().parse("{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\",\"goalRevision\":1,"
+                + "\"status\":\"running\",\"error\":null,"
+                + "\"skill\":{\"skillInstanceId\":\"s\",\"type\":\"mine\",\"target\":{\"block\":\"minecraft:iron_ore\"},"
+                + "\"phase\":\"waiting_action\",\"progress\":{\"requested\":1,\"mined\":0,\"complete\":false},\"result\":null},"
+                + "\"action\":{\"type\":\"mine_target\",\"actionId\":\"a\",\"actionSequence\":1,\"skillInstanceId\":\"s\","
+                + "\"companionId\":\"c\",\"dimension\":0,\"targetRef\":\"block-1_2_3\",\"block\":\"minecraft:iron_ore\","
+                + "\"timeoutMs\":30000,\"observationSequence\":5}}").getAsJsonObject();
+        SkillProtocol.validateView(o, "world", 1, "boot");
+        SkillProtocol.Skill skill = SkillProtocol.skill(o);
+        assertEquals("block", skill.field);
+        assertEquals("minecraft:iron_ore", skill.name);
+        assertEquals(0, skill.achieved);
+        SkillProtocol.Action action = SkillProtocol.action(o);
+        assertEquals("mine_target", action.type);
+        assertEquals("minecraft:iron_ore", action.block);
+        assertNull(action.item);
+        assertEquals(1, action.maxCount);
+        assertEquals("block", action.field());
     }
 
     private void reject(Action<JsonObject> mutation) {

@@ -118,6 +118,21 @@ class StateCacheTests(unittest.TestCase):
         self.assertEqual(len(cache.entries), 32)
         with self.assertRaises(SyncError): cache.view({"version": 1, "session": snapshot()["session"]})
 
+    def test_block_sightings_are_tracked(self):
+        cache = StateCache(); cache.update(snapshot(), True); cache.update(events())
+        delta = {"version": 1, "session": snapshot()["session"], "sequence": 2, "events": [
+            {"type": "block_entered_range", "id": "block-1_64_2", "observation": {"type": "minecraft:log", "distance": 2}}]}
+        cache.update(delta)
+        self.assertEqual(cache.view({"version": 1})["state"]["blocks"]["block-1_64_2"], {"type": "minecraft:log", "distance": 2})
+        delta["sequence"] = 3
+        delta["events"] = [{"type": "block_updated", "id": "block-1_64_2", "observation": {"type": "minecraft:log", "distance": 4}}]
+        cache.update(delta)
+        self.assertEqual(cache.view({"version": 1})["state"]["blocks"]["block-1_64_2"]["distance"], 4)
+        delta["sequence"] = 4
+        delta["events"] = [{"type": "block_left_range", "id": "block-1_64_2"}]
+        cache.update(delta)
+        self.assertEqual(cache.view({"version": 1})["state"]["blocks"], {})
+
     def test_private_fields_rejected(self):
         data = snapshot(); data["state"]["owner"]["name"] = "PRIVATE_TEST_MARKER_12345"
         with self.assertRaises(ValueError): StateCache().update(data, True)

@@ -21,7 +21,7 @@ def snapshot():
             "state": {"dimension": 0, "owner": {"position": [8, 64, 0], "health": 20, "inventory": {}},
                       "companion": {"id": "companion", "position": [0, 64, 0], "health": 20,
                                     "task": "idle", "result": "none", "inventory": {}},
-                      "hostiles": {}, "items": {}}}
+                      "hostiles": {}, "items": {}, "blocks": {}}}
 
 
 def request(revision=1, goal="follow_owner", session="world"):

@@ -33,7 +33,7 @@ public final class CompanionCommands {
 
     private void execute(EntityPlayerMP player, DebugCommand command) {
         if (command.type.equals("help")) {
-            reply(player, "!agent spawn / follow / stop / look / pickup / deposit / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop|pickup|deposit|collect_drop アイテム 個数");
+            reply(player, "!agent spawn / follow / stop / look / pickup / deposit / say メッセージ / status / ping / chat メッセージ / forget / do follow|look|stop|pickup|deposit|collect_drop アイテム 個数|mine ブロック");
             return;
         }
         CompanionEntity companion = find(player);

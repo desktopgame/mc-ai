@@ -8,6 +8,10 @@ public final class SkillProtocol {
     public static final List<String> ITEMS = Collections.unmodifiableList(Arrays.asList(
             "minecraft:log", "minecraft:cobblestone", "minecraft:iron_ingot",
             "minecraft:planks", "minecraft:stick"));
+    public static final List<String> BLOCKS = Collections.unmodifiableList(Arrays.asList(
+            "minecraft:log", "minecraft:log2", "minecraft:cobblestone", "minecraft:stone",
+            "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
+            "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel"));
     public static final List<String> STATUS = Collections.unmodifiableList(Arrays.asList(
             "idle", "thinking", "running", "completed", "failed", "cancelled"));
 
@@ -30,34 +34,45 @@ public final class SkillProtocol {
         if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
             throw new IllegalArgumentException("Expected integer");
         }
-        String text = value.toString();
-        if (!text.matches("-?[0-9]+")) { throw new IllegalArgumentException("Expected integer"); }
+        if (!value.toString().matches("-?[0-9]+")) { throw new IllegalArgumentException("Expected integer"); }
         int parsed = value.getAsInt();
         if (parsed < minimum || parsed > maximum) { throw new IllegalArgumentException("Out of range"); }
         return parsed;
     }
 
     public static final class Action {
-        public final String actionId, skillInstanceId, companionId, targetRef, item;
+        public final String type, actionId, skillInstanceId, companionId, targetRef, item, block;
         public final int sequence, dimension, maxCount, observationSequence, timeoutMs;
         Action(JsonObject o) {
-            keys(o, "type", "actionId", "actionSequence", "skillInstanceId", "companionId", "dimension",
-                    "targetRef", "item", "maxCount", "timeoutMs", "observationSequence");
-            if (!string(o, "type").equals("pickup_target")) { throw new IllegalArgumentException("Unknown action type"); }
+            type = string(o, "type");
+            if (type.equals("pickup_target")) {
+                keys(o, "type", "actionId", "actionSequence", "skillInstanceId", "companionId", "dimension",
+                        "targetRef", "item", "maxCount", "timeoutMs", "observationSequence");
+                item = string(o, "item"); block = null;
+                if (!ITEMS.contains(item)) { throw new IllegalArgumentException("Unsupported item"); }
+                maxCount = integer(o, "maxCount", 1, 64);
+            } else if (type.equals("mine_target")) {
+                keys(o, "type", "actionId", "actionSequence", "skillInstanceId", "companionId", "dimension",
+                        "targetRef", "block", "timeoutMs", "observationSequence");
+                block = string(o, "block"); item = null;
+                if (!BLOCKS.contains(block)) { throw new IllegalArgumentException("Unsupported block"); }
+                maxCount = 1;
+            } else {
+                throw new IllegalArgumentException("Unknown action type");
+            }
             actionId = string(o, "actionId");
             skillInstanceId = string(o, "skillInstanceId");
             companionId = string(o, "companionId");
             targetRef = string(o, "targetRef");
-            item = string(o, "item");
             if (!actionId.matches("[A-Za-z0-9_-]{1,80}") || !skillInstanceId.matches("[A-Za-z0-9_-]{1,80}")
                     || !companionId.matches("[A-Za-z0-9_-]{1,80}")) { throw new IllegalArgumentException("Invalid identity"); }
-            if (!ITEMS.contains(item)) { throw new IllegalArgumentException("Unsupported item"); }
             sequence = integer(o, "actionSequence", 1, 100000);
             dimension = integer(o, "dimension", Integer.MIN_VALUE, Integer.MAX_VALUE);
-            maxCount = integer(o, "maxCount", 1, 64);
             observationSequence = integer(o, "observationSequence", 0, Integer.MAX_VALUE);
             timeoutMs = integer(o, "timeoutMs", 1, 600000);
         }
+        public String name() { return item != null ? item : block; }
+        public String field() { return item != null ? "item" : "block"; }
     }
 
     /** Validates the v2 view envelope; leaves skill.result to the caller. */
@@ -80,24 +95,32 @@ public final class SkillProtocol {
     }
 
     public static final class Skill {
-        public final String skillInstanceId, type, item, phase;
-        public final int requested, acquired;
+        public final String skillInstanceId, type, name, field, phase;
+        public final int requested, achieved;
         public final boolean complete;
         public final String resultStatus, resultReason;
         Skill(JsonObject o) {
             keys(o, "skillInstanceId", "type", "target", "phase", "progress", "result");
             skillInstanceId = string(o, "skillInstanceId");
             type = string(o, "type");
-            if (!type.equals("collect_drop")) { throw new IllegalArgumentException("Unknown skill"); }
+            if (type.equals("collect_drop")) { field = "item"; }
+            else if (type.equals("mine")) { field = "block"; }
+            else { throw new IllegalArgumentException("Unknown skill"); }
             JsonObject target = o.getAsJsonObject("target");
-            keys(target, "item");
-            item = string(target, "item");
-            if (!ITEMS.contains(item)) { throw new IllegalArgumentException("Unsupported item"); }
+            keys(target, field);
+            name = string(target, field);
+            if (field.equals("item") ? !ITEMS.contains(name) : !BLOCKS.contains(name)) {
+                throw new IllegalArgumentException("Unsupported target");
+            }
             phase = string(o, "phase");
             JsonObject progress = o.getAsJsonObject("progress");
-            keys(progress, "requested", "acquired", "complete");
+            Set<String> progressKeys = new HashSet<String>();
+            for (Map.Entry<String, JsonElement> e : progress.entrySet()) { progressKeys.add(e.getKey()); }
+            if (!progressKeys.equals(new HashSet<String>(Arrays.asList("requested", field.equals("item") ? "acquired" : "mined", "complete")))) {
+                throw new IllegalArgumentException("Unexpected progress fields");
+            }
             requested = integer(progress, "requested", 1, 64);
-            acquired = integer(progress, "acquired", 0, 64);
+            achieved = integer(progress, field.equals("item") ? "acquired" : "mined", 0, 64);
             JsonElement done = progress.get("complete");
             if (done == null || !done.isJsonPrimitive() || !done.getAsJsonPrimitive().isBoolean()) {
                 throw new IllegalArgumentException("Expected boolean");

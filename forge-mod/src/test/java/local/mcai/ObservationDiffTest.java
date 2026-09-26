@@ -62,6 +62,29 @@ public class ObservationDiffTest {
         assertEquals(1, left.events.size());
         assertEquals("item_left_range", left.events.get(0).getAsJsonObject().get("type").getAsString());
     }
+    @Test public void mineableBlocksEnterUpdateAndLeaveRange() throws Exception {
+        JsonObject old = state(), now = state();
+        now.getAsJsonObject("blocks").add("block-1_64_2", new JsonParser().parse("{\"type\":\"minecraft:log\",\"distance\":6}"));
+        ObservationDiff entered = new ObservationDiff(old, now);
+        assertEquals(1, entered.events.size());
+        assertEquals("block_entered_range", entered.events.get(0).getAsJsonObject().get("type").getAsString());
+        now.getAsJsonObject("blocks").add("block-1_64_2", new JsonParser().parse("{\"type\":\"minecraft:log\",\"distance\":2}"));
+        assertEquals("block_updated", new ObservationDiff(entered.state, now).events.get(0).getAsJsonObject().get("type").getAsString());
+        now.getAsJsonObject("blocks").remove("block-1_64_2");
+        assertEquals("block_left_range", new ObservationDiff(entered.state, now).events.get(0).getAsJsonObject().get("type").getAsString());
+    }
+
+    @Test public void mineResultsMapToTaskCompletion() throws Exception {
+        JsonObject old = state(), now = state();
+        now.getAsJsonObject("companion").addProperty("task", "mine");
+        now.getAsJsonObject("companion").addProperty("result", "mine_completed");
+        assertTrue(new ObservationDiff(old, now).events.toString().contains("task_completed"));
+        for (String failure : new String[] {"no_block_in_range", "tool_unavailable", "path_not_found"}) {
+            now = state(); now.getAsJsonObject("companion").addProperty("result", failure);
+            assertTrue(failure, new ObservationDiff(old, now).events.toString().contains("task_failed"));
+        }
+    }
+
     @Test public void companionInventoryAndPickupResultsAreReported() throws Exception {
         JsonObject old = state(), now = state();
         now.getAsJsonObject("companion").getAsJsonObject("inventory").addProperty("minecraft:diamond", 1);

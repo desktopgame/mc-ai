@@ -5,26 +5,34 @@ from state_cache import identity
 
 SUPPORTED_ITEMS = ("minecraft:log", "minecraft:cobblestone", "minecraft:iron_ingot",
                    "minecraft:planks", "minecraft:stick")
+SUPPORTED_BLOCKS = ("minecraft:log", "minecraft:log2", "minecraft:cobblestone", "minecraft:stone",
+                    "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
+                    "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel")
 LEGACY_GOALS = ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")
-CAPABILITIES = ("collect_drop_v1",)
+CAPABILITIES = ("collect_drop_v1", "mine_v1")
 
 TOP_STATUS = ("idle", "thinking", "running", "completed", "failed", "cancelled")
 PHASES = ("selecting", "waiting_action", "cancelling", "terminal")
 SKILL_TERMINAL = ("completed", "failed", "cancelled")
 ACTION_STATUS = ("running", "succeeded", "failed", "cancelled")
 
-# Reasons a Skill action receipt may carry. `target_lost` / `target_not_ready` are Skill-only.
-ACTION_REASONS = ("accepted", "completed", "target_lost", "target_not_ready", "path_not_found",
-                  "inventory_full", "inventory_empty", "owner_unavailable", "companion_unavailable",
-                  "unsafe_state", "expired", "disconnected", "stopped", "replaced", "action_failed")
-FAILURE_REASONS = ("target_lost", "target_not_ready", "path_not_found", "inventory_full",
-                   "unsafe_state", "owner_unavailable", "companion_unavailable", "expired",
-                   "disconnected", "action_failed")
+# Reasons a Skill action receipt may carry. `target_lost` / `target_not_ready` / `tool_unavailable`
+# are Skill-only.
+ACTION_REASONS = ("accepted", "completed", "target_lost", "target_not_ready", "tool_unavailable",
+                  "path_not_found", "inventory_full", "inventory_empty", "owner_unavailable",
+                  "companion_unavailable", "unsafe_state", "expired", "disconnected", "stopped",
+                  "replaced", "action_failed")
+FAILURE_REASONS = ("target_lost", "target_not_ready", "tool_unavailable", "path_not_found",
+                   "inventory_full", "unsafe_state", "owner_unavailable", "companion_unavailable",
+                   "expired", "disconnected", "action_failed")
+# A missing required tool cannot be fixed by trying another target of the same kind.
+TERMINAL_FAILURE_REASONS = ("tool_unavailable",)
 PATH_FAILURES = ("path_not_found",)
 
-SKILL_REASONS = ("completed", "no_item_in_range", "path_not_found", "retry_exhausted",
-                 "inventory_full", "unsafe_state", "owner_unavailable", "companion_unavailable",
-                 "stale_state", "expired", "disconnected", "stopped", "replaced", "action_failed")
+SKILL_REASONS = ("completed", "no_item_in_range", "no_block_in_range", "path_not_found",
+                 "retry_exhausted", "inventory_full", "tool_unavailable", "unsafe_state",
+                 "owner_unavailable", "companion_unavailable", "stale_state", "expired",
+                 "disconnected", "stopped", "replaced", "action_failed")
 
 ITEM_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 MAX_REVISION = 2147483647
@@ -80,28 +88,49 @@ def validate_open(data):
     return {"version": 2, "session": identity(data["session"])}
 
 
-def parse_collect_drop(goal):
+def _parse_target(goal, target_key, allowlist, code):
     if not isinstance(goal, dict) or set(goal) - {"type", "target", "count", "constraints"} \
             or not {"type", "target", "count"} <= set(goal):
         raise SkillRequestError("invalid_request")
-    if goal["type"] != "collect_drop":
-        raise SkillRequestError("invalid_request")
     target = goal["target"]
-    if not isinstance(target, dict) or set(target) != {"item"} or not isinstance(target["item"], str):
+    if not isinstance(target, dict) or set(target) != {target_key} or not isinstance(target[target_key], str):
         raise SkillRequestError("invalid_request")
-    item = target["item"]
-    if not ITEM_NAME.fullmatch(item):
+    name = target[target_key]
+    if not ITEM_NAME.fullmatch(name):
         raise SkillRequestError("invalid_request")
-    if item not in SUPPORTED_ITEMS:
-        raise SkillRequestError("unsupported_item")
+    if name not in allowlist:
+        raise SkillRequestError(code)
     count = goal["count"]
     if type(count) is not int or type(count) is bool or not 1 <= count <= 64:
         raise SkillRequestError("invalid_request")
-    if "constraints" in goal:
-        constraints = goal["constraints"]
-        if not isinstance(constraints, list) or constraints:
-            raise SkillRequestError("unsupported_constraint")
-    return {"type": "collect_drop", "target": {"item": item}, "count": count, "constraints": []}
+    if "constraints" in goal and (not isinstance(goal["constraints"], list) or goal["constraints"]):
+        raise SkillRequestError("unsupported_constraint")
+    return {target_key: name, "count": count}
+
+
+def parse_collect_drop(goal):
+    if goal.get("type") != "collect_drop":
+        raise SkillRequestError("invalid_request")
+    parsed = _parse_target(goal, "item", SUPPORTED_ITEMS, "unsupported_item")
+    return {"type": "collect_drop", "target": {"item": parsed["item"]}, "count": parsed["count"], "constraints": []}
+
+
+def parse_mine(goal):
+    if goal.get("type") != "mine":
+        raise SkillRequestError("invalid_request")
+    parsed = _parse_target(goal, "block", SUPPORTED_BLOCKS, "unsupported_block")
+    return {"type": "mine", "target": {"block": parsed["block"]}, "count": parsed["count"], "constraints": []}
+
+
+def parse_goal_object(goal):
+    if not isinstance(goal, dict):
+        raise SkillRequestError("invalid_request")
+    kind = goal.get("type")
+    if kind == "collect_drop":
+        return parse_collect_drop(goal)
+    if kind == "mine":
+        return parse_mine(goal)
+    raise SkillRequestError("unsupported_goal")
 
 
 def validate_goal(data):
@@ -117,19 +146,32 @@ def validate_goal(data):
         if goal not in LEGACY_GOALS:
             raise SkillRequestError("unsupported_goal")
         parsed = goal
-    elif isinstance(goal, dict):
-        parsed = parse_collect_drop(goal)
     else:
-        raise SkillRequestError("invalid_request")
+        parsed = parse_goal_object(goal)
     return {"version": 2, "session": session, "daemonEpoch": epoch, "goalRevision": rev, "goal": parsed}
+
+
+def _parse_payload(data, key, id_key, count):
+    payload = data[key]
+    if not isinstance(payload, dict) or set(payload) != {id_key, "count"}:
+        raise SkillRequestError("invalid_request")
+    if not isinstance(payload[id_key], str) or not ITEM_NAME.fullmatch(payload[id_key]):
+        raise SkillRequestError("invalid_request")
+    count = payload["count"]
+    if type(count) is not int or type(count) is bool or not 0 <= count <= 64:
+        raise SkillRequestError("invalid_request")
+    return {"field": id_key, "id": payload[id_key], "count": count}
 
 
 def validate_result(data):
     if not isinstance(data, dict):
         raise SkillRequestError("invalid_request")
     if "skillInstanceId" in data:
-        _keys(data, {"version", "session", "daemonEpoch", "goalRevision", "skillInstanceId",
-                     "actionId", "actionSequence", "status", "reason", "acquired"})
+        base = {"version", "session", "daemonEpoch", "goalRevision", "skillInstanceId",
+                "actionId", "actionSequence", "status", "reason"}
+        if "acquired" in data and "destroyed" in data:
+            raise SkillRequestError("invalid_request")
+        _keys(data, base | ({"acquired"} if "acquired" in data else {"destroyed"}))
         _version(data, 2)
         status = data["status"]
         if type(status) is not str or status not in ACTION_STATUS:
@@ -140,23 +182,21 @@ def validate_result(data):
         seq = data["actionSequence"]
         if type(seq) is not int or type(seq) is bool or not 1 <= seq <= 100000:
             raise SkillRequestError("invalid_request")
-        acquired = data["acquired"]
-        if not isinstance(acquired, dict) or set(acquired) != {"item", "count"}:
+        if "acquired" in data:
+            payload = _parse_payload(data, "acquired", "item", 0)
+            kind = "item"
+        else:
+            payload = _parse_payload(data, "destroyed", "block", 0)
+            kind = "block"
+        if status == "running" and (reason != "accepted" or payload["count"] != 0):
             raise SkillRequestError("invalid_request")
-        if not isinstance(acquired["item"], str) or not ITEM_NAME.fullmatch(acquired["item"]):
-            raise SkillRequestError("invalid_request")
-        count = acquired["count"]
-        if type(count) is not int or type(count) is bool or not 0 <= count <= 64:
-            raise SkillRequestError("invalid_request")
-        if status == "running" and (reason != "accepted" or count != 0):
-            raise SkillRequestError("invalid_request")
-        if status != "succeeded" and count != 0:
+        if status != "succeeded" and payload["count"] != 0:
             raise SkillRequestError("invalid_request")
         return {"kind": "skill", "version": 2, "session": identity(data["session"]),
                 "daemonEpoch": identity(data["daemonEpoch"]), "goalRevision": revision(data["goalRevision"]),
                 "skillInstanceId": identity(data["skillInstanceId"]), "actionId": identity(data["actionId"]),
                 "actionSequence": seq, "status": status, "reason": reason,
-                "acquired": {"item": acquired["item"], "count": count}}
+                "payload_kind": kind, "payload": payload}
     _keys(data, {"version", "session", "daemonEpoch", "goalRevision", "actionId", "status", "reason"})
     _version(data, 2)
     status = data["status"]

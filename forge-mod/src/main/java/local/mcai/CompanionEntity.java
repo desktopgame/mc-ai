@@ -1,11 +1,13 @@
 package local.mcai;
 
+import net.minecraft.block.Block;
 import net.minecraft.entity.EntityCreature;
 import net.minecraft.entity.SharedMonsterAttributes;
 import net.minecraft.entity.ai.EntityAIBase;
 import net.minecraft.entity.ai.EntityAISwimming;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.init.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
@@ -35,6 +37,11 @@ public final class CompanionEntity extends EntityCreature {
     private boolean targetPickup;
     // Skill control lease: no world mutation after this nanoTime. Long.MAX_VALUE disables it (legacy pickup).
     private long controlDeadline = Long.MAX_VALUE;
+    // Target-fixed Skill mine. minedStored survives stop() until the action receipt is sent.
+    private int mineX, mineY, mineZ;
+    private String mineBlockName = "";
+    private int minedStored = -1;
+    private String mineOutcome = "";
 
     public CompanionEntity(World world) {
         super(world);
@@ -47,6 +54,7 @@ public final class CompanionEntity extends EntityCreature {
         tasks.addTask(2, new PickupTask());
         tasks.addTask(3, new DepositTask());
         tasks.addTask(4, new PickupTargetTask());
+        tasks.addTask(5, new MineTargetTask());
     }
 
     @Override protected void applyEntityAttributes() {
@@ -91,6 +99,21 @@ public final class CompanionEntity extends EntityCreature {
     public int lastPickupStored() { return pickupStored; }
     public String pickupOutcome() { return pickupOutcome; }
     public void setControlDeadline(long value) { controlDeadline = value; }
+
+    /** Skill mine: break one fixed block position with the best available tool. */
+    public void mineBlock(String targetRef, String blockName) {
+        stop();
+        String body = targetRef.startsWith("block-") ? targetRef.substring("block-".length()) : targetRef;
+        String[] parts = body.split("_");
+        mineX = Integer.parseInt(parts[0]); mineY = Integer.parseInt(parts[1]); mineZ = Integer.parseInt(parts[2]);
+        mineBlockName = blockName;
+        minedStored = -1; mineOutcome = "";
+        task = "mine";
+        result("mining");
+    }
+    public boolean mineResolved() { return minedStored >= 0; }
+    public int lastMined() { return minedStored; }
+    public String mineOutcome() { return mineOutcome; }
 
     public int carriedCount() {
         int total = 0;
@@ -202,6 +225,34 @@ public final class CompanionEntity extends EntityCreature {
         if (remaining.stackSize <= 0) { item.setDead(); } else { item.setEntityItemStack(remaining); }
         pickupOutcome = "completed";
         result("pickup_completed");
+    }
+
+    /** Deterministic tool choice: best harvesting tool in inventory, or null for bare hand. */
+    private ItemStack bestTool(Block block, int meta) {
+        ItemStack best = null;
+        float bestSpeed = 1.0F;
+        for (ItemStack stack : inventory) {
+            if (stack == null || stack.stackSize <= 0 || !stack.canItemHarvestBlock(block)) { continue; }
+            float speed = stack.getStrVsBlock(block);
+            if (best == null || speed > bestSpeed) { best = stack; bestSpeed = speed; }
+        }
+        return best;
+    }
+
+    private boolean handCanHarvest(Block block, int meta) {
+        return block.getMaterial().isToolNotRequired();
+    }
+
+    /** Breaks one block with the best tool, or fails tool_unavailable when a required tool is missing. */
+    private void breakBlock(Block block, int x, int y, int z) {
+        int meta = worldObj.getBlockMetadata(x, y, z);
+        ItemStack tool = bestTool(block, meta);
+        if (tool == null && !handCanHarvest(block, meta)) {
+            stop(); minedStored = 0; mineOutcome = "tool_unavailable"; result("tool_unavailable"); return;
+        }
+        block.dropBlockAsItemWithChance(worldObj, x, y, z, meta, 1.0F, 0);
+        worldObj.setBlockToAir(x, y, z);
+        stop(); minedStored = 1; mineOutcome = "completed"; result("mine_completed");
     }
 
     private EntityPlayer owner() {
@@ -365,6 +416,38 @@ public final class CompanionEntity extends EntityCreature {
                 boolean found = getNavigator().tryMoveToEntityLiving(item, 1.0D);
                 boolean exhausted = pathRetry.exhausted(found);
                 result(found ? "picking_up" : exhausted ? "path_not_found" : "path_retrying");
+            }
+        }
+    }
+
+    private final class MineTargetTask extends EntityAIBase {
+        private int retryTicks;
+        MineTargetTask() { setMutexBits(3); }
+        @Override public boolean shouldExecute() { return task.equals("mine"); }
+        @Override public boolean continueExecuting() { return shouldExecute(); }
+        @Override public void startExecuting() { retryTicks = 0; pathRetry.reset(); }
+        @Override public void resetTask() { getNavigator().clearPathEntity(); }
+        @Override public void updateTask() {
+            Block block = worldObj.getBlock(mineX, mineY, mineZ);
+            Object name = block == Blocks.air ? null : Block.blockRegistry.getNameForObject(block);
+            if (name == null || !name.toString().equals(mineBlockName)) {
+                stop(); minedStored = 0; mineOutcome = "target_lost"; result("no_block_in_range"); return;
+            }
+            getLookHelper().setLookPosition(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D, 30.0F, 30.0F);
+            double distance = getDistanceSq(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D);
+            if (distance <= 20.25D) {
+                getNavigator().clearPathEntity();
+                if (System.nanoTime() > controlDeadline) {
+                    stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;
+                }
+                breakBlock(block, mineX, mineY, mineZ);
+                return;
+            }
+            if (--retryTicks <= 0) {
+                retryTicks = 20;
+                boolean found = getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
+                boolean exhausted = pathRetry.exhausted(found);
+                result(found ? "mining" : exhausted ? "path_not_found" : "path_retrying");
             }
         }
     }

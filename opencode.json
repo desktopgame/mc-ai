@@ -42,7 +42,11 @@
       "Get-CimInstance *": "allow",
       "Get-NetTCPConnection *": "allow",
       "Get-Content *": "allow",
+      "Get-ChildItem *": "allow",
+      "Test-Path *": "allow",
       "Select-String *": "allow",
+
+      "python -m unittest discover -s agent/tests*": "allow",
 
       "./scripts/forge.ps1 build*": "allow",
       ".\\scripts\\forge.ps1 build*": "allow",
@@ -53,6 +57,14 @@
       "./scripts/deploy-mod.ps1 *": "allow",
       ".\\scripts\\deploy-mod.ps1 *": "allow",
       "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/deploy-mod.ps1 *": "allow",
+      "./scripts/run-python-tests.ps1*": "allow",
+      ".\\scripts\\run-python-tests.ps1*": "allow",
+      "./scripts/daemon-status.ps1*": "allow",
+      ".\\scripts\\daemon-status.ps1*": "allow",
+      "./scripts/stop-daemon.ps1*": "allow",
+      ".\\scripts\\stop-daemon.ps1*": "allow",
+      "./scripts/show-daemon-logs.ps1*": "allow",
+      ".\\scripts\\show-daemon-logs.ps1*": "allow",
 
       "git push*": "ask",
       "git pull*": "ask",

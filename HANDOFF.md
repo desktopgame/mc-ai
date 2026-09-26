@@ -3,30 +3,32 @@
 ## 最初に読むもの
 
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
+mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.13、未デプロイ）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
-入口は `!agent do collect_drop <アイテム> <個数>` と v2 typed protocol。Planner・採掘・自然文からの引数抽出は範囲外。
-自動テストはPython 76件・Java 40件。基本の収集を実ゲームで確認済み（部分収納・取消・経路失敗は未検証）。
+入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
+自動テストはPython 81件・Java 43件。基本の収集を実ゲームで確認済み（mine・部分収納・取消・経路失敗は未検証）。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
 
-Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作が完了している。残りは `attack / mine / place / craft / smelt`。
+Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作とSkill Layer、mine primitiveが完了している。残りは `attack / place / craft / smelt`。
+計画順は「mine primitive → `collect_block`/`collect(log,N)` → attack/place/craft → Skillを数種 → JEV typed selection → 必要ならクラウド選択 → 高レベルPlanner」。`collect_block`/`collect(log,N)` は次段階で、この増分では実装しない。
 仕様は「一度に全部作らない」「1.7.10のpathfinding / recipe / inventory APIを確認しながら追加する」を明記しているため、1操作ずつ追加する。
 
-## 現在地（2026-09-26 14:00頃に確認）
+## 現在地（2026-09-26 確認）
 
 | 項目 | 確認結果 |
 | --- | --- |
-| Git HEAD | `403e605` 時点からSkill Layerを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.12`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理） |
-| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`）。0.0.11は `.disabled` |
-| Daemon | PID `40924` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（lease/receipt追加反映後の0.0.12相当、`--shutdown-token` 付き） |
+| Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
+| MODバージョン | `0.0.13`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism未配置 |
+| Prismの有効MOD | `mc-ai-companion-0.0.12.jar`（SHA-256 `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`）。0.0.13は `build/libs` に生成済み |
+| Daemon | PID `40924` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（0.0.12相当、mine未反映）。`--shutdown-token` 付き |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **71件**・Java **40件**・Forgeビルド成功 |
+| 自動テスト | Python **81件**・Java **43件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
-**反映済み。** MOD・Daemon・ドキュメントは同じ世代（レビュー3点＋control lease反映）。次は実機で `!agent do collect_drop` を確認するだけ。
+**反映待ち。** mine primitive（0.0.13）を `deploy-mod.ps1 -Version 0.0.13` で配置し、`restart-daemon.ps1` でDaemonを入れ替えてから実機確認する。
 
 ## 実装済みの機能
 
@@ -47,6 +49,10 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
   レビュー反映: Skillを離れるときは `goal:null` のcancel handshakeを完了してから通常actionへ移る。terminal receiptは収納前にqueue枠を予約し、満杯時は pending として再送する（黙って捨てない）。Forgeは `timeoutMs` で単発actionを打ち切る。Daemonは取消receiptを再選択ではなくcancelledで終端する。
   control lease: action実行中もForgeが約1秒ごとに `/v2/goal` をpollしてleaseを更新し、最後の検証済み同epoch/session/revision応答から5秒を超えると `CompanionEntity` が収納直前（world変更前）に停止する。Daemonも最後のcontrol pollから5秒を超えたら新actionを発行しない（`status`取得やaction結果ではleaseを更新しない）。
   lease/receipt追加反映: leaseは受理が確定したpollのみ更新（`stale_goal`/`conflicting_goal`/`stale_state`等の拒否では更新しない）。action receiptの `goalRevision` を該当Skillのrevisionと照合し、不一致は409。terminal後に届いた既知actionのreceiptはrecorded/ACKのみで `settled` に記録し、terminal resultとprogressは変えない（未知IDは409）。
+- **mine primitive（0.0.13 / protocol 2）**: `mine_target`（1 action = 1 block破壊）と mine候補のblock観測。
+  観測はCompanion周辺16ブロック（水平±16・垂直±8）のallowlist blockのみ・最大16候補。Daemonはopaqueな `block-<x>_<y>_<z>`、registry名、距離だけを扱う。
+  道具選択はForgeが決定的（`Material.isToolNotRequired()` なら素手、必須ツールが無ければ `tool_unavailable`）。進捗は `mined`、receiptは `destroyed:{block,count}` で `collect_drop` のprogressとは混ぜない。
+  入口は `!agent do mine <ブロック>`。詳細は [protocol/mine-primitive.md](protocol/mine-primitive.md)。
 
 ### pickup / deposit の設計判断（重要）
 
@@ -82,15 +88,16 @@ Phase 6（Game Actions）に着手済みで、`pickup` と `deposit` の2操作�
 | task・result → イベント種別 | `ObservationDiff.java` |
 | 手動コマンド | `DebugCommand.java`、`CompanionCommands.java` |
 | Skill（Daemon） | `agent/src/skill_protocol.py` の語彙・理由、`skills.py` の状態遷移 |
-| Skill（MOD） | `SkillProtocol.java`、`SkillExecutionState.java`、`ActionBridge.java` の `requestSkill`/`skillTick`、`CompanionEntity.pickupItem` |
+| Skill（MOD） | `SkillProtocol.java`、`SkillExecutionState.java`、`ActionBridge.java` の `requestSkill`/`requestMine`/`skillTick`、`CompanionEntity.pickupItem`/`mineBlock` |
+| block観測（Daemon/MOD） | `state_cache.py` の `TASKS / RESULTS / block_candidate`、`ObservationBridge.java`/`ObservationDiff.java`、`SkillProtocol.BLOCKS` |
 
-Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEMS` と MOD `SkillProtocol.ITEMS`）と fixture を同時に更新する。
+Skillを増やすときは allowlist（Daemon `SUPPORTED_ITEMS`/`SUPPORTED_BLOCKS` と MOD `SkillProtocol.ITEMS`/`BLOCKS`）と fixture を同時に更新する。
 
 `IntentTest.everySupportedIntentIsAccepted` がDaemonの全intentをMOD側に通す回帰テストなので、intentを増やしたらここにも追加する。
 
 ## 検証状況
 
-直近の自動検証はPython **76件**・Java **40件**・Forgeビルド成功（0.0.12時点）。
+直近の自動検証はPython **81件**・Java **43件**・Forgeビルド成功（0.0.13時点）。
 
 実ゲームで確認済み（0.0.9～0.0.12分）:
 
@@ -104,6 +111,7 @@ Skillを増やすときは `collect_drop` の allowlist（Daemon `SUPPORTED_ITEM
 
 未確認・残る制限:
 
+- mine primitive（0.0.13）は自動テストのみ。実ゲームでの採掘・素手/道具・`tool_unavailable`・block観測は未検証。
 - Skill Layer（0.0.12）の基本収集は実機確認済み。部分収納（対象がmaxCountより少ない）・地面残量・取消・置換・経路失敗・満杯は未検証。
 - ワールド再入場後のCompanionインベントリ保持（NBT保存は実装済み・実機未検証）。
 - 死亡時の所持品ドロップ、`inventory_full`（9スロット満杯での拾得）、`owner_inventory_full`（所有者満杯での受け渡し）。
@@ -147,18 +155,23 @@ OpenALFix導入後も音声処理のクラッシュ記録があり、完全解�
 
 ## 再開・反映手順
 
-ビルド・配置・Daemon再起動は専用スクリプトに統一した（`.claude/settings.json` で許可済み）。
+ビルド・配置・Daemon操作は専用スクリプトに統一した（`.claude/settings.json` と `opencode.json` で許可済み）。
 
 ```powershell
 .\scripts\forge.ps1 build                    # ビルド＋Javaテスト
-python -m unittest discover -s agent/tests   # Pythonテスト
-.\scripts\deploy-mod.ps1 -Version 0.0.12     # Prismへ配置（ゲーム起動中なら中断）
-.\scripts\restart-daemon.ps1                 # Daemon入れ替え（二重起動を拒否）
+.\scripts\run-python-tests.ps1               # Pythonテスト（引数はそのまま渡せる: -v）
+.\scripts\deploy-mod.ps1 -Version 0.0.13     # Prismへ配置（ゲーム起動中なら中断）
+.\scripts\restart-daemon.ps1                 # Daemon入れ替え（graceful shutdown→起動、二重起動を拒否）
+.\scripts\stop-daemon.ps1                    # Daemon停止のみ（loopback /local/shutdown、昇格不要）
+.\scripts\daemon-status.ps1                  # 待受PID・プロセス数・protocol行・token有無・ログ末尾（読取専用）
+.\scripts\show-daemon-logs.ps1               # Daemonログのtail（読取専用）
 ```
 
 `deploy-mod.ps1` は指定バージョン以外の `mc-ai-companion-*.jar` を `.disabled` にし、配置後のSHA-256を表示する。
-`restart-daemon.ps1` はコマンドラインで対象を特定して停止し、**停止できなければ起動せず中断**、起動後は該当プロセスが1つだけであることを検証する。
+`restart-daemon.ps1` はまず loopback `/local/shutdown` で終了させ（管理者起動のDaemonでも昇格不要）、生存時のみプロセス停止へフォールバックし、起動後は該当プロセスが1つだけであることを検証する。
 初回cloneは `.\scripts\setup-jdk.ps1` → `.\scripts\forge.ps1 setupDecompWorkspace build`。開発起動は `.\scripts\forge.ps1 runClient`。
+
+`opencode.json` では上記スクリプト・`python -m unittest discover -s agent/tests`・読み取り専用の `Get-*` を allow にし、`Measure-Command` や任意URLへの `Invoke-RestMethod`、`Add-Type` など任意実行になり得るものは allow していない（必要なときだけ承認する）。
 
 ゲーム一時停止中は観測も止まり、15秒以上でstaleになる。状態確認中はワールドを一時停止しない。
 Daemon再起動で会話履歴・キャッシュ・goalは消える。ワールド保存済みのCompanionと所持品は残り、観測は再同期する。
@@ -185,24 +198,28 @@ Daemon再起動で会話履歴・キャッシュ・goalは消える。ワール�
 - `agent/src/context_budget.py`: 予算検証・推定・履歴の削除。
 - `agent/src/social.py` / `decision.py`: 独立したprovider、会話intentとTacticalの入力・出力検証。
 - `agent/src/goals.py`: 有界の目的管理・推論worker・世代・実行結果。判断入力の組み立て（落下物と所持点数の要約もここ）。
-- `agent/src/daemon.py` / `state_cache.py`: HTTPと観測キャッシュ（owner/companionのインベントリ、hostiles、items）。
+- `agent/src/daemon.py` / `state_cache.py`: HTTPと観測キャッシュ（owner/companionのインベントリ、hostiles、items、blocks）。
+- `agent/src/skill_protocol.py` / `skills.py` / `execution_registry.py`: v2のSkill語彙・検証、`collect_drop`/`mine` の状態遷移、実行権と結果台帳。
 - `forge-mod/src/main/java/local/mcai/` の `PingBridge`・`ConversationQueue`・`PingClient`: 会話FIFO、返信の世代、intentの許容リスト。
 - 同 `ActionBridge`・`GoalState`・`ActionProtocol`: 実行権限、世代管理、制御と結果通知、操作ごとの安全条件。
 - 同 `IoExecutors`: 4系統の通信Executor。`CompanionHud`: 状態アイコン（クライアント専用、ClientProxy経由で登録）。
-- 同 `CompanionEntity`・`CompanionCommands`: 個体・経路探索・操作・9スロットのインベントリ（follow / pickup / depositの3タスク）。
-- 同 `ObservationBridge`・`ObservationDiff`: 観測・差分・ACK・再同期。
+- 同 `CompanionEntity`・`CompanionCommands`: 個体・経路探索・操作・9スロットのインベントリ（follow / pickup / deposit / pickup_target / mine の各タスク）。
+- 同 `ObservationBridge`・`ObservationDiff`: 観測・差分・ACK・再同期。`blocks` は周辺16ブロックのallowlist block候補（最大16）。
+- 同 `SkillProtocol`・`SkillExecutionState`: v2のSkill view/action検証、claimとaction台帳。
 - `protocol/` と各tests: 通信仕様・fixture・回帰テスト。
 
 観測は毎秒、ACK済み位置から2ブロック以上の累積移動で座標送信。無変更でも約5～6秒ごとに空イベント。
-落下物は `item-<entityId>` で最大16件、距離は2ブロック刻み。インベントリ差分は `entity`（owner/companion）で区別する。
+落下物は `item-<UUID>` で最大16件、採掘候補blockは `block-<x>_<y>_<z>` で最大16件、距離は2ブロック刻み。インベントリ差分は `entity`（owner/companion）で区別する。
 キャッシュは32セッション・各100イベント。会話は32セッションで予算内の直近往復を保持。両方メモリのみ。
 
 ## 次の機能候補（未着手）
 
-Phase 6の残りは `attack / mine / place / craft / smelt`。`pickup` と `deposit` は完了しているので再実装しない。
+Phase 6の残りは `attack / place / craft / smelt`。`pickup` / `deposit` / `mine` は完了しているので再実装しない。
+計画順は「mine primitive → `collect_block`/`collect(log,N)` → attack/place/craft → Skillを2〜4種 → JEV typed skill selection → 必要ならクラウド選択 → 高レベルPlanner」。
 
+- 次段階は `collect_block` / `collect(log,N)`: `mine_target` と `pickup_target` を順序づけるSkill。`collect_drop` の意味・成功条件は変更しない（§15）。mineの破壊数とpickupの取得数を同じprogressへ二重加算しない。
 - `attack`: 敵の観測（`hostiles`）は既にあるため判断入力は揃っている。対象選択の可否、武器・ダメージ、危険時の撤退など安全条件の設計が増える。
-- 実ゲーム未検証項目（インベントリ保持、満杯時の挙動、経路失敗）を潰してから次へ進む選択肢もある。
+- 実ゲーム未検証項目（mine、インベントリ保持、満杯時の挙動、経路失敗）を潰してから次へ進む選択肢もある。
 - goto・長期記憶、JEV/クラウドprovider、GUI設定、マルチプレイヤーは未実装。高度な割り込み分類、予約実行、進捗を用いた会話も後続。
 
 ## ログ・成果物の参照
@@ -210,7 +227,7 @@ Phase 6の残りは `attack / mine / place / craft / smelt`。`pickup` と `depo
 - Daemonのログ: `.tools/daemon.stdout.log` / `.tools/daemon.stderr.log`、PID記録 `.tools/daemon.pid`（現在性は保証しない）。
   `intent-*` `lifecycle-*` `phase*-*` は過去セッションの記録。
 - ゲームログ: Prism内 `minecraft/logs/fml-client-latest.log`（MODの初期化・例外）と `latest.log`（チャット、CP932）。
-- 配置済み0.0.12のSHA-256: `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`。
+- 配置済み0.0.12のSHA-256: `38BC7478E0F7A2D98F17951B70F54E819266E9B0740C33610D3E18645F917926`。0.0.13は `build/libs` に生成済みで未配置。
 - Claude向けの権限設定は `.claude/settings.json`（読み取り専用コマンド、上記3スクリプト、WebFetchの許可ドメイン）。
 
 古い手順・実装経緯はGit履歴から参照できる。過去のPIDや「未コミット」「起動したまま」を現在の状態として扱わない。

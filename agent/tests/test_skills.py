@@ -15,17 +15,26 @@ from skill_protocol import SkillRequestError, SkillSyncError
 from daemon import Handler
 
 
-def snapshot(items=None, inventory=None, seq=0, session="world", companion="companion"):
+def snapshot(items=None, inventory=None, seq=0, session="world", companion="companion", blocks=None):
     return {"version": 1, "session": session, "sequence": seq,
             "state": {"dimension": 0,
                       "owner": {"position": [0, 64, 0], "health": 20, "inventory": {}},
                       "companion": {"id": companion, "position": [0, 64, 0], "health": 20,
                                     "task": "idle", "result": "none", "inventory": inventory or {}},
-                      "hostiles": {}, "items": items or {}}}
+                      "hostiles": {}, "items": items or {}, "blocks": blocks or {}}}
 
 
 def drop(distance=4, kind="minecraft:log"):
     return {"type": kind, "distance": distance}
+
+
+def block(distance=4, kind="minecraft:log"):
+    return {"type": kind, "distance": distance}
+
+
+def mine_goal(revision, block_name="minecraft:log", count=1, session="world", epoch=None):
+    return {"version": 2, "session": session, "daemonEpoch": epoch, "goalRevision": revision,
+            "goal": {"type": "mine", "target": {"block": block_name}, "count": count, "constraints": []}}
 
 
 def goal(revision, item="minecraft:log", count=5, session="world", epoch=None, goal_type="collect_drop"):
@@ -95,6 +104,58 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(view["skill"]["result"]["reason"], "completed")
         self.assertEqual(view["skill"]["result"]["progress"], {"requested": 5, "acquired": 5, "complete": True})
         self.assertIsNone(view["action"])
+
+    def receipt(self, action, status, reason, payload, revision=1):
+        body = {"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": revision,
+                "skillInstanceId": action["skillInstanceId"], "actionId": action["actionId"],
+                "actionSequence": action["actionSequence"], "status": status, "reason": reason}
+        body.update(payload)
+        return body
+
+    def test_mine_happy_path_destroys_one_block(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(blocks={"block-0_64_0": block(4)}, seq=1), True)
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        action = view["action"]
+        self.assertEqual(action["type"], "mine_target")
+        self.assertEqual(action["block"], "minecraft:log")
+        self.assertEqual(action["targetRef"], "block-0_64_0")
+        self.assertNotIn("maxCount", action)
+        self.assertNotIn("item", action)
+        manager.result(self.receipt(action, "running", "accepted", {"destroyed": {"block": "minecraft:log", "count": 0}}))
+        states.update(snapshot(blocks={}, seq=2), True)
+        manager.result(self.receipt(action, "succeeded", "completed", {"destroyed": {"block": "minecraft:log", "count": 1}}))
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertEqual(view["status"], "completed")
+        self.assertEqual(view["skill"]["result"]["progress"], {"requested": 1, "mined": 1, "complete": True})
+
+    def test_mine_tool_unavailable_is_terminal(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(blocks={"block-0_64_0": block(4)}, seq=1), True)
+        action = manager.update(mine_goal(1, epoch=self.epoch))["action"]
+        manager.result(self.receipt(action, "failed", "tool_unavailable", {"destroyed": {"block": "minecraft:log", "count": 0}}))
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["skill"]["result"]["reason"], "tool_unavailable")
+        self.assertIsNone(view["action"])
+        self.assertEqual(view["skill"]["result"]["progress"]["complete"], True)
+
+    def test_mine_rejects_item_receipt_payload(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(blocks={"block-0_64_0": block(4)}, seq=1), True)
+        action = manager.update(mine_goal(1, epoch=self.epoch))["action"]
+        with self.assertRaises(SkillSyncError):
+            manager.result(self.receipt(action, "succeeded", "completed", {"acquired": {"item": "minecraft:log", "count": 1}}))
+
+    def test_mine_no_block_in_range(self):
+        states, manager, self.epoch = self.create()
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertIsNone(view["action"])
+        self.now[0] = SEARCH_WINDOW + 1
+        manager.tick()
+        view = manager.update(mine_goal(1, epoch=self.epoch))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["skill"]["result"]["reason"], "no_block_in_range")
 
     def test_duplicate_and_conflicting_results(self):
         states, manager, self.epoch = self.create()
@@ -279,6 +340,11 @@ class SkillTests(unittest.TestCase):
         for item in ("minecraft:diamond", "", "nope"):
             with self.assertRaises(SkillRequestError):
                 manager.update(goal(1, item=item, epoch=self.epoch))
+        for bad_block in ("minecraft:diamond_block", "", "nope"):
+            with self.assertRaises(SkillRequestError):
+                manager.update(mine_goal(1, block_name=bad_block, epoch=self.epoch))
+        with self.assertRaises(SkillRequestError):
+            manager.update(mine_goal(1, count=0, epoch=self.epoch))
         with self.assertRaises(SkillRequestError):
             manager.update({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
                             "goal": {"type": "collect_drop", "target": {"item": "minecraft:log"},
@@ -301,7 +367,7 @@ class SkillTests(unittest.TestCase):
         try:
             status, opened = post("/v2/execution/open", {"version": 2, "session": "world"})
             self.assertEqual(status, 200)
-            self.assertEqual(opened["capabilities"], ["collect_drop_v1"])
+            self.assertEqual(opened["capabilities"], ["collect_drop_v1", "mine_v1"])
             status, view = post("/v2/goal", goal(1, count=2, epoch=opened["daemonEpoch"]))
             self.assertEqual(status, 200)
             self.assertEqual(view["action"]["type"], "pickup_target")

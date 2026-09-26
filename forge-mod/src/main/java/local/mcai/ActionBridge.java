@@ -3,8 +3,10 @@ package local.mcai;
 import com.google.gson.*;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
+import net.minecraft.block.Block;
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.init.Blocks;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
@@ -36,10 +38,10 @@ public final class ActionBridge {
     // v2 Skill dialogue. Kept separate from the legacy GoalState so a Skill never claims a legacy action.
     private final SkillExecutionState skillState = new SkillExecutionState();
     private boolean skillActive, skillCancelPending, skillInFlight, openInFlight, openDone, skillDone, skillCancelSent;
-    private String skillEpoch, skillItem, claimedActionId, claimedItem, lastIssuedActionId;
+    private String skillEpoch, skillItem, skillField, claimedActionId, claimedItem, claimedField, lastIssuedActionId;
     private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
     private long claimedDeadline;
-    private JsonObject pendingSkillResult;
+    private JsonObject skillGoal, pendingSkillResult;
     private volatile JsonObject openResponse, skillResponse;
     /** Control lease: a verified same-epoch/session/revision response keeps the action alive this long. */
     private static final long CONTROL_LEASE_NANOS = 5000000000L;
@@ -123,9 +125,14 @@ public final class ActionBridge {
             requestSkill(event.player, parts[3], count);
             return;
         }
+        if (parts.length == 4 && parts[2].equals("mine")) {
+            if (!SkillProtocol.BLOCKS.contains(parts[3])) { reply("使い方: !agent do mine <ブロック>"); return; }
+            requestMine(event.player, parts[3]);
+            return;
+        }
         if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop")
                 || parts[2].equals("pickup") || parts[2].equals("deposit"))) {
-            reply("使い方: !agent do follow / look / stop / pickup / deposit / collect_drop <アイテム> <個数>"); return;
+            reply("使い方: !agent do follow / look / stop / pickup / deposit / collect_drop <アイテム> <個数> / mine <ブロック>"); return;
         }
         requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner"
                 : parts[2].equals("pickup") ? "pickup_item" : parts[2].equals("deposit") ? "deposit_items" : "stop", null);
@@ -159,8 +166,24 @@ public final class ActionBridge {
         return true;
     }
 
-    // ---- v2 Skill: collect_drop -----------------------------------------
+    // ---- v2 Skill: collect_drop / mine ----------------------------------
     private boolean requestSkill(EntityPlayerMP player, String item, int count) {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("type", "collect_drop");
+        JsonObject target = new JsonObject(); target.addProperty("item", item); goal.add("target", target);
+        goal.addProperty("count", count); goal.add("constraints", new JsonArray());
+        return startSkill(player, goal, "item", item, count, "collect_drop");
+    }
+
+    private boolean requestMine(EntityPlayerMP player, String block) {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("type", "mine");
+        JsonObject target = new JsonObject(); target.addProperty("block", block); goal.add("target", target);
+        goal.addProperty("count", 1); goal.add("constraints", new JsonArray());
+        return startSkill(player, goal, "block", block, 1, "mine");
+    }
+
+    private boolean startSkill(EntityPlayerMP player, JsonObject goal, String field, String name, int count, String label) {
         synchronize(player);
         MinecraftServer server = MinecraftServer.getServer();
         CompanionEntity companion = CompanionCommands.find(player);
@@ -171,11 +194,11 @@ public final class ActionBridge {
         if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
         cancelActive("replaced"); closeSkill("replaced", false); intentOrder.manual();
         companion.stop(); active = null;
-        state.replace("collect_drop");
+        state.replace(label);
         skillState.reset(state.session); skillState.revision = state.revision;
         skillActive = true; skillCancelPending = false; skillEpoch = null;
-        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
-        skillItem = item; skillCount = count;
+        claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
+        skillGoal = goal; skillField = field; skillItem = name; skillCount = count;
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         nextPoll = 0;
         debugReply("新しい指示を受け付けました。判断を待っています。");
@@ -191,32 +214,21 @@ public final class ActionBridge {
         return body;
     }
 
-    private JsonObject skillGoalObject() {
-        JsonObject goal = new JsonObject();
-        goal.addProperty("type", "collect_drop");
-        JsonObject target = new JsonObject();
-        target.addProperty("item", skillItem);
-        goal.add("target", target);
-        goal.addProperty("count", skillCount);
-        goal.add("constraints", new JsonArray());
-        return goal;
-    }
-
     /** Stops local Skill execution. notifyNull leaves the cancel handshake to finish before clearing state. */
     private void closeSkill(String reason, boolean notifyNull) {
         if (!skillActive) { return; }
         // A terminal receipt that is already prepared must be delivered, not replaced by a cancel.
         if (pendingSkillResult == null && skillEpoch != null && skillState.skillInstanceId != null) {
             if (claimedActionId != null && !skillState.known(claimedActionId)) {
-                if (enqueueSkillResult(claimedActionId, claimedSequence, "cancelled", reason, 0, claimedItem)) {
+                if (enqueueSkillResult(claimedActionId, claimedSequence, "cancelled", reason, claimedField, claimedItem, 0)) {
                     skillState.complete("cancelled", reason, 0);
                 }
             } else if (lastIssuedActionId != null && !skillState.known(lastIssuedActionId)) {
-                enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, 0, skillItem);
+                enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, skillField, skillItem, 0);
             }
         }
         if (active != null) { active.stop(); active = null; }
-        claimedActionId = null; claimedItem = null;
+        claimedActionId = null; claimedItem = null; claimedField = null;
         if (notifyNull && skillEpoch != null && state.session != null) {
             skillCancelPending = true; skillCancelSent = false;
         } else {
@@ -224,17 +236,18 @@ public final class ActionBridge {
         }
     }
 
-    private boolean enqueueSkillResult(String actionId, int sequence, String status, String reason, int count, String item) {
-        if (state.session == null || skillEpoch == null || skillState.skillInstanceId == null || item == null) { return false; }
+    private boolean enqueueSkillResult(String actionId, int sequence, String status, String reason,
+                                       String field, String name, int count) {
+        if (state.session == null || skillEpoch == null || skillState.skillInstanceId == null || name == null) { return false; }
         JsonObject body = skillEnvelope();
         body.addProperty("skillInstanceId", skillState.skillInstanceId);
         body.addProperty("actionId", actionId);
         body.addProperty("actionSequence", sequence);
         body.addProperty("status", status);
         body.addProperty("reason", reason);
-        JsonObject acquired = new JsonObject();
-        acquired.addProperty("item", item); acquired.addProperty("count", count);
-        body.add("acquired", acquired);
+        JsonObject payload = new JsonObject();
+        payload.addProperty(field, name); payload.addProperty("count", count);
+        body.add(field.equals("block") ? "destroyed" : "acquired", payload);
         return enqueueSkillResultBody(body);
     }
 
@@ -293,6 +306,17 @@ public final class ActionBridge {
                 finishSkillAction("failed", "companion_unavailable", 0);
             } else if (active.getHealth() <= 6 || active.getDistanceSqToEntity(owner) > 1024) {
                 active.stop(); finishSkillAction("failed", "unsafe_state", 0);
+            } else if ("block".equals(claimedField)) {
+                if (active.mineResolved()) {
+                    int mined = Math.min(active.lastMined(), claimedMaxCount);
+                    String outcome = active.mineOutcome();
+                    if (mined > 0) { finishSkillAction("succeeded", outcome == null || outcome.isEmpty() ? "completed" : outcome, mined); }
+                    else { finishSkillAction("failed", outcome == null || outcome.isEmpty() ? "tool_unavailable" : outcome, 0); }
+                } else if (now >= claimedDeadline) {
+                    active.stop(); finishSkillAction("failed", "expired", 0);
+                } else if (active.lastResult().equals("path_not_found")) {
+                    active.stop(); finishSkillAction("failed", "path_not_found", 0);
+                }
             } else if (active.pickupResolved()) {
                 int stored = Math.min(active.lastPickupStored(), claimedMaxCount);
                 String outcome = active.pickupOutcome();
@@ -344,7 +368,7 @@ public final class ActionBridge {
         if (!skillActive || skillInFlight || now < nextPoll) { return; }
         // Poll even while an action is outstanding: the response renews the control lease and lets
         // the Forge observe a Daemon-side cancellation before committing world changes.
-        startSkillGoal(skillGoalObject());
+        startSkillGoal(skillGoal);
     }
 
     private void consumeSkill(JsonObject response) {
@@ -355,7 +379,7 @@ public final class ActionBridge {
             if (active != null) { active.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS); }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
             if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
-            if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.acquired); return; }
+            if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.achieved); return; }
             SkillProtocol.Action action = SkillProtocol.action(response);
             if (action == null) { return; }
             lastIssuedActionId = action.actionId; lastIssuedSequence = action.sequence;
@@ -367,28 +391,37 @@ public final class ActionBridge {
                     || !action.companionId.equals(companion.getUniqueID().toString())) {
                 failSkill("unsafe_state"); return;
             }
-            EntityItem target = findTarget(companion, action.targetRef, action.item);
-            if (target == null) {
-                if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", 0, action.item)
-                        && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
-                return;
-            }
-            if (target.delayBeforeCanPickup > 0) {
-                if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_not_ready", 0, action.item)
-                        && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_not_ready", 0); }
-                return;
+            if (action.field().equals("block")) {
+                if (!blockMatches(companion, action.targetRef, action.block)) {
+                    if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", "block", action.block, 0)
+                            && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
+                    return;
+                }
+            } else {
+                EntityItem target = findTarget(companion, action.targetRef, action.item);
+                if (target == null) {
+                    if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_lost", "item", action.item, 0)
+                            && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_lost", 0); }
+                    return;
+                }
+                if (target.delayBeforeCanPickup > 0) {
+                    if (enqueueSkillResult(action.actionId, action.sequence, "failed", "target_not_ready", "item", action.item, 0)
+                            && skillState.claim(action.actionId, action.sequence)) { skillState.complete("failed", "target_not_ready", 0); }
+                    return;
+                }
             }
             // Reserve room for the running and terminal receipts before mutating the world.
             if (results.size() >= 60) { return; }
             if (!skillState.claim(action.actionId, action.sequence)) { return; }
             claimedActionId = action.actionId; claimedSequence = action.sequence;
-            claimedItem = action.item; claimedMaxCount = action.maxCount;
+            claimedItem = action.name(); claimedField = action.field(); claimedMaxCount = action.maxCount;
             claimedDeadline = System.nanoTime() + (long) action.timeoutMs * 1000000L;
             state.status = "running";
             active = companion;
             companion.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
-            companion.pickupItem(action.targetRef, action.maxCount);
-            enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", 0, action.item);
+            if (action.field().equals("block")) { companion.mineBlock(action.targetRef, action.block); }
+            else { companion.pickupItem(action.targetRef, action.maxCount); }
+            enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", action.field(), action.name(), 0);
         } catch (RuntimeException e) {
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected skill view ({})", e.getClass().getSimpleName());
             failSkill("action_failed");
@@ -404,28 +437,28 @@ public final class ActionBridge {
         body.addProperty("actionSequence", claimedSequence);
         body.addProperty("status", status);
         body.addProperty("reason", reason);
-        JsonObject acquired = new JsonObject();
-        acquired.addProperty("item", claimedItem); acquired.addProperty("count", count);
-        body.add("acquired", acquired);
+        JsonObject payload = new JsonObject();
+        payload.addProperty(claimedField, claimedItem); payload.addProperty("count", count);
+        body.add(claimedField.equals("block") ? "destroyed" : "acquired", payload);
         // Never mark the action settled unless its terminal receipt has a reserved slot.
         if (enqueueSkillResultBody(body)) {
             skillState.complete(status, reason, count);
-            claimedActionId = null; claimedItem = null;
+            claimedActionId = null; claimedItem = null; claimedField = null;
         } else {
             pendingSkillResult = body;
         }
     }
 
-    private void finishSkill(String status, String reason, int acquired) {
+    private void finishSkill(String status, String reason, int achieved) {
         if ("completed".equals(status)) {
-            reply(skillItem + "を" + skillCount + "個集めました。");
+            reply("block".equals(skillField) ? skillItem + " を採掘しました。" : skillItem + "を" + skillCount + "個集めました。");
         } else if ("cancelled".equals(status)) {
-            debugReply("収集を取り消しました。");
+            debugReply("指示を取り消しました。");
         } else {
-            reply(skillItem + "の収集を完了できませんでした（" + reason + "、" + acquired + "/" + skillCount + "個）。");
+            reply(skillItem + " を完了できませんでした（" + reason + "、" + achieved + "/" + skillCount + "）。");
         }
         if (active != null) { active.stop(); active = null; }
-        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+        claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
         skillActive = false; skillCancelPending = false; skillEpoch = null;
         state.goal = null; state.actionId = null; state.status = "idle";
         nextPoll = 0;
@@ -436,23 +469,25 @@ public final class ActionBridge {
         if (pendingSkillResult != null) {
             // A real collection already happened; deliver its receipt via flushPendingSkillResult.
             if (active != null) { active.stop(); active = null; }
-            claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+            claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
             skillActive = false; skillCancelPending = false; skillEpoch = null;
             state.goal = null; state.actionId = null; state.status = "idle";
             nextPoll = 0;
             return;
         }
         if (skillActive && skillEpoch != null && claimedActionId != null && !skillState.known(claimedActionId)) {
-            if (enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, 0, claimedItem)) {
+            String field = claimedField != null ? claimedField : skillField;
+            String name = claimedItem != null ? claimedItem : skillItem;
+            if (enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, field, name, 0)) {
                 skillState.complete("failed", reason, 0);
             }
         }
         if (active != null) { active.stop(); active = null; }
-        claimedActionId = null; claimedItem = null; lastIssuedActionId = null;
+        claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
         skillActive = false; skillCancelPending = false; skillEpoch = null;
         state.goal = null; state.actionId = null; state.status = "idle";
         nextPoll = 0;
-        debugReply("収集を完了できなかったため停止しました（" + reason + "）。");
+        debugReply("指示を完了できなかったため停止しました（" + reason + "）。");
     }
 
     /** Retries a terminal receipt that could not be queued when the world was changed. */
@@ -463,9 +498,10 @@ public final class ActionBridge {
         pendingSkillResult = null;
         String status = body.get("status").getAsString();
         String reason = body.get("reason").getAsString();
-        int count = body.getAsJsonObject("acquired").get("count").getAsInt();
+        JsonObject payload = body.has("destroyed") ? body.getAsJsonObject("destroyed") : body.getAsJsonObject("acquired");
+        int count = payload.get("count").getAsInt();
         skillState.complete(status, reason, count);
-        claimedActionId = null; claimedItem = null;
+        claimedActionId = null; claimedItem = null; claimedField = null;
     }
 
     private EntityItem findTarget(CompanionEntity companion, String targetRef, String item) {
@@ -481,6 +517,22 @@ public final class ActionBridge {
             return entity;
         }
         return null;
+    }
+
+    /** The fixed mine target must still be the expected block within observation range. */
+    private boolean blockMatches(CompanionEntity companion, String targetRef, String blockName) {
+        String body = targetRef.startsWith("block-") ? targetRef.substring("block-".length()) : targetRef;
+        String[] parts = body.split("_");
+        if (parts.length != 3) { return false; }
+        int x, y, z;
+        try { x = Integer.parseInt(parts[0]); y = Integer.parseInt(parts[1]); z = Integer.parseInt(parts[2]); }
+        catch (NumberFormatException error) { return false; }
+        if (!companion.worldObj.blockExists(x, y, z)) { return false; }
+        Block block = companion.worldObj.getBlock(x, y, z);
+        if (block == null || block == Blocks.air) { return false; }
+        Object name = Block.blockRegistry.getNameForObject(block);
+        if (name == null || !name.toString().equals(blockName)) { return false; }
+        return companion.getDistanceSq(x + 0.5D, y + 0.5D, z + 0.5D) <= CompanionEntity.ITEM_RANGE_SQUARED;
     }
 
     private void result(String status, String reason) {

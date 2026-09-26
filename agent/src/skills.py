@@ -1,4 +1,4 @@
-"""Bounded collect_drop Skill lifecycle. No Minecraft, HTTP, or provider dependencies.
+"""Bounded Skill lifecycle (collect_drop / mine). No Minecraft, HTTP, or provider dependencies.
 
 The manager owns Skill progress and target selection. The Forge side remains the authority
 for the real world: the Daemon's candidates are never an arrival guarantee.
@@ -10,9 +10,9 @@ import time
 import uuid
 from collections import OrderedDict
 
-from skill_protocol import (CAPABILITIES, FAILURE_REASONS, PATH_FAILURES, SkillBusyError,
-                            SkillSyncError, parse_collect_drop, validate_goal, validate_open,
-                            validate_result, validate_status)
+from skill_protocol import (CAPABILITIES, FAILURE_REASONS, PATH_FAILURES, TERMINAL_FAILURE_REASONS,
+                            SkillBusyError, SkillSyncError, validate_goal,
+                            validate_open, validate_result, validate_status)
 
 LOG = logging.getLogger("mcai.skills")
 
@@ -30,17 +30,26 @@ MAX_TERMINAL = 100
 TERMINAL_TTL = 600.0
 
 
-class CollectDrop:
+class Skill:
+    """Shared lifecycle: phases, timers, fencing, retry and terminal handling."""
+    kind = ""
+    collection = ""       # state_cache collection consulted for candidates
+    action_type = ""
+    target_field = ""     # "item" | "block"
+    progress_key = ""     # progress JSON field
+    receipt_key = ""      # result payload field: "acquired" | "destroyed"
+    not_found_reason = ""
+    manual_count = 1
+
     def __init__(self, session, revision, goal, skill_id, now, companion, dimension):
         self.session = session
         self.revision = revision
         self.goal = goal
         self.skill_id = skill_id
-        self.item = goal["target"]["item"]
         self.requested = goal["count"]
         self.companion = companion
         self.dimension = dimension
-        self.acquired = 0
+        self.progress_count = 0
         self.phase = "selecting"
         self.issued = 0
         self.failures = 0
@@ -60,24 +69,90 @@ class CollectDrop:
         self.issued_ids = set()    # every actionId this Skill ever issued, settled or not
         self.unresolved = False
 
+    # ---- per-kind hooks --------------------------------------------------
+    def target_id(self):
+        raise NotImplementedError
+
+    def target_json(self):
+        return {self.target_field: self.target_id()}
+
+    def build_current(self, target_ref, cached_sequence, now):
+        self.issued += 1
+        return {"actionId": str(uuid.uuid4()), "sequence": self.issued, "targetRef": target_ref,
+                "maxCount": 1, "observationSequence": cached_sequence, "issuedAt": now, "running": False}
+
+    def action_json(self, current):
+        return {"type": self.action_type, "actionId": current["actionId"],
+                "actionSequence": current["sequence"], "skillInstanceId": self.skill_id,
+                "companionId": self.companion, "dimension": self.dimension,
+                "targetRef": current["targetRef"], self.target_field: self.target_id(),
+                "timeoutMs": int(ACTION_TIMEOUT * 1000), "observationSequence": current["observationSequence"]}
+
+    # ---- shared views ----------------------------------------------------
     def definition(self):
-        return {"type": "collect_drop", "target": {"item": self.item}, "count": self.requested, "constraints": []}
+        return {"type": self.kind, "target": self.target_json(), "count": self.requested, "constraints": []}
 
     def progress(self):
-        return {"requested": self.requested, "acquired": self.acquired, "complete": not self.unresolved}
+        return {"requested": self.requested, self.progress_key: self.progress_count, "complete": not self.unresolved}
 
     def view(self):
-        return {"skillInstanceId": self.skill_id, "type": "collect_drop",
-                "target": {"item": self.item}, "phase": self.phase,
-                "progress": self.progress(), "result": copy.deepcopy(self.result)}
+        return {"skillInstanceId": self.skill_id, "type": self.kind, "target": self.target_json(),
+                "phase": self.phase, "progress": self.progress(), "result": copy.deepcopy(self.result)}
+
+
+class CollectDrop(Skill):
+    kind = "collect_drop"
+    collection = "items"
+    action_type = "pickup_target"
+    target_field = "item"
+    progress_key = "acquired"
+    receipt_key = "acquired"
+    not_found_reason = "no_item_in_range"
+
+    def __init__(self, session, revision, goal, skill_id, now, companion, dimension):
+        super().__init__(session, revision, goal, skill_id, now, companion, dimension)
+        self.item = goal["target"]["item"]
+
+    def target_id(self):
+        return self.item
+
+    def build_current(self, target_ref, cached_sequence, now):
+        current = super().build_current(target_ref, cached_sequence, now)
+        current["maxCount"] = min(self.requested - self.progress_count, 64)
+        return current
+
+    def action_json(self, current):
+        action = super().action_json(current)
+        action["maxCount"] = current["maxCount"]
+        return action
+
+
+class Mine(Skill):
+    kind = "mine"
+    collection = "blocks"
+    action_type = "mine_target"
+    target_field = "block"
+    progress_key = "mined"
+    receipt_key = "destroyed"
+    not_found_reason = "no_block_in_range"
+
+    def __init__(self, session, revision, goal, skill_id, now, companion, dimension):
+        super().__init__(session, revision, goal, skill_id, now, companion, dimension)
+        self.block = goal["target"]["block"]
+
+    def target_id(self):
+        return self.block
+
+
+SKILL_TYPES = {"collect_drop": CollectDrop, "mine": Mine}
 
 
 class SkillManager:
     def __init__(self, states, registry, clock=time.monotonic, goals=None):
         self.states, self.registry, self.clock, self.goals = states, registry, clock, goals
         self.lock = threading.Lock()
-        self.active = OrderedDict()   # session -> CollectDrop
-        self.other = OrderedDict()    # skillInstanceId -> CollectDrop (settling or terminal)
+        self.active = OrderedDict()   # session -> Skill
+        self.other = OrderedDict()    # skillInstanceId -> Skill (settling or terminal)
         self.revisions = {}           # session -> accepted revision
         self.leases = {}              # session -> last verified control poll time
 
@@ -129,8 +204,11 @@ class SkillManager:
             old = self.active.get(session)
             if old is not None:
                 self._move_to_settling(old, "replaced")
-            skill = CollectDrop(session, revision, goal, str(uuid.uuid4()), now,
-                                companion["id"], state["dimension"])
+            factory = SKILL_TYPES.get(goal["type"])
+            if factory is None:
+                raise SkillSyncError("unsupported_goal")
+            skill = factory(session, revision, goal, str(uuid.uuid4()), now,
+                            companion["id"], state["dimension"])
             self.active[session] = skill
             self.revisions[session] = revision
             self.leases[session] = now
@@ -150,6 +228,8 @@ class SkillManager:
                 raise SkillSyncError("unknown_skill")
             if parsed["goalRevision"] != skill.revision:
                 raise SkillSyncError("unknown_action")
+            if parsed["payload_kind"] != skill.target_field:
+                raise SkillSyncError("conflicting_result")
             self._apply_result(skill, parsed)
         return {"version": 2, "accepted": True}
 
@@ -182,8 +262,7 @@ class SkillManager:
         return cached["state"]
 
     def _cache(self, session):
-        cached = self.states.view({"version": 1, "session": session})
-        return cached
+        return self.states.view({"version": 1, "session": session})
 
     def _legacy(self, session, revision, goal):
         if self.goals is None:
@@ -229,13 +308,7 @@ class SkillManager:
         status = skill.result["status"] if skill.result else "running"
         action = None
         if skill.phase == "waiting_action" and skill.current is not None and not skill.current["running"]:
-            current = skill.current
-            action = {"type": "pickup_target", "actionId": current["actionId"],
-                      "actionSequence": current["sequence"], "skillInstanceId": skill.skill_id,
-                      "companionId": skill.companion, "dimension": skill.dimension,
-                      "targetRef": current["targetRef"], "item": skill.item,
-                      "maxCount": current["maxCount"], "timeoutMs": int(ACTION_TIMEOUT * 1000),
-                      "observationSequence": current["observationSequence"]}
+            action = skill.action_json(skill.current)
         return {"version": 2, "session": session, "daemonEpoch": self.registry.epoch,
                 "goalRevision": skill.revision, "status": status, "error": None,
                 "skill": skill.view(), "action": action}
@@ -280,8 +353,8 @@ class SkillManager:
             del self.active[skill.session]
         self.other[skill.skill_id] = skill
         self.other.move_to_end(skill.skill_id)
-        LOG.info("skill terminal session=%s status=%s reason=%s acquired=%d/%d",
-                 skill.session, status, reason, skill.acquired, skill.requested)
+        LOG.info("skill terminal session=%s kind=%s status=%s reason=%s progress=%d/%d",
+                 skill.session, skill.kind, status, reason, skill.progress_count, skill.requested)
         self._expire_terminal()
 
     def _expire_terminal(self):
@@ -323,7 +396,7 @@ class SkillManager:
     def _step(self, skill):
         if skill.phase != "selecting":
             return
-        if skill.acquired >= skill.requested and not skill.unresolved:
+        if skill.progress_count >= skill.requested and not skill.unresolved:
             self._finalize(skill, "completed", "completed")
             return
         if skill.current is not None:
@@ -343,8 +416,8 @@ class SkillManager:
             self._searching(skill, now, fresh=False)
             return
         state = cached["state"]
-        candidates = sorted((value["distance"], key) for key, value in state["items"].items()
-                            if value["type"] == skill.item and key not in skill.excluded)
+        candidates = sorted((value["distance"], key) for key, value in state[skill.collection].items()
+                            if value["type"] == skill.target_id() and key not in skill.excluded)
         if not candidates:
             self._searching(skill, now, fresh=True)
             return
@@ -356,10 +429,7 @@ class SkillManager:
         if now - self.leases.get(skill.session, float("-inf")) > CONTROL_LEASE:
             return
         _, target_ref = candidates[0]
-        skill.issued += 1
-        skill.current = {"actionId": str(uuid.uuid4()), "sequence": skill.issued, "targetRef": target_ref,
-                         "maxCount": min(skill.requested - skill.acquired, 64),
-                         "observationSequence": cached["sequence"], "issuedAt": now, "running": False}
+        skill.current = skill.build_current(target_ref, cached["sequence"], now)
         skill.issued_ids.add(skill.current["actionId"])
         skill.unresolved = True
         skill.phase = "waiting_action"
@@ -373,40 +443,41 @@ class SkillManager:
         if not fresh:
             self._finalize(skill, "failed", "stale_state")
         else:
-            self._finalize(skill, "failed", "path_not_found" if skill.saw_path_failure else "no_item_in_range")
+            self._finalize(skill, "failed", "path_not_found" if skill.saw_path_failure else skill.not_found_reason)
 
     def _apply_result(self, skill, parsed):
+        payload = parsed["payload"]
         if skill.phase == "terminal":
             # The terminal result is immutable. A known receipt is ACKed and recorded only.
             recorded = skill.settled.get(parsed["actionId"])
             if recorded is not None:
                 if recorded["status"] != parsed["status"] or recorded["reason"] != parsed["reason"] \
-                        or recorded["count"] != parsed["acquired"]["count"]:
+                        or recorded["count"] != payload["count"]:
                     raise SkillSyncError("conflicting_result")
                 return
             if parsed["actionId"] not in skill.issued_ids:
                 raise SkillSyncError("unknown_action")
-            if parsed["acquired"]["item"] != skill.item:
+            if payload["id"] != skill.target_id():
                 raise SkillSyncError("conflicting_result")
             if parsed["status"] != "running":
                 skill.settled[parsed["actionId"]] = {"status": parsed["status"], "reason": parsed["reason"],
-                                                     "count": parsed["acquired"]["count"]}
+                                                     "count": payload["count"]}
             return
         current = skill.current
         if current is None or current["actionId"] != parsed["actionId"] \
                 or current["sequence"] != parsed["actionSequence"]:
             if parsed["actionId"] in skill.settled:
                 recorded = skill.settled[parsed["actionId"]]
-                if recorded["status"] == parsed["status"] and recorded["count"] == parsed["acquired"]["count"]:
+                if recorded["status"] == parsed["status"] and recorded["count"] == payload["count"]:
                     return
                 raise SkillSyncError("conflicting_result")
             raise SkillSyncError("unknown_action")
-        if parsed["acquired"]["item"] != skill.item:
+        if payload["id"] != skill.target_id():
             raise SkillSyncError("conflicting_result")
         if parsed["status"] == "running":
             current["running"] = True
             return
-        count = parsed["acquired"]["count"]
+        count = payload["count"]
         if parsed["status"] == "succeeded" and count > current["maxCount"]:
             raise SkillSyncError("conflicting_result")
         target_ref = current["targetRef"]
@@ -415,11 +486,11 @@ class SkillManager:
         skill.unresolved = False
         skill.current = None
         if parsed["status"] == "succeeded":
-            skill.acquired += count
+            skill.progress_count += count
             skill.failures = 0
             skill.fence_sequence = issued_sequence
             skill.fence_until = self.clock() + SEARCH_WINDOW
-            if skill.acquired >= skill.requested:
+            if skill.progress_count >= skill.requested:
                 self._finalize(skill, "completed", "completed")
             else:
                 skill.phase = "selecting"
@@ -437,6 +508,10 @@ class SkillManager:
         if skill.phase == "cancelling":
             skill.excluded.add(target_ref)
             self._finalize(skill, "cancelled", skill.cancel_reason or "replaced")
+            return
+        if parsed["reason"] in TERMINAL_FAILURE_REASONS:
+            skill.excluded.add(target_ref)
+            self._finalize(skill, "failed", parsed["reason"])
             return
         skill.failures += 1
         if parsed["reason"] in PATH_FAILURES:
