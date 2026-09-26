@@ -37,14 +37,21 @@ public final class ActionBridge {
     private final ArrayDeque<ResultJob> results = new ArrayDeque<ResultJob>();
     // v2 Skill dialogue. Kept separate from the legacy GoalState so a Skill never claims a legacy action.
     private final SkillExecutionState skillState = new SkillExecutionState();
-    private boolean skillActive, skillCancelPending, skillInFlight, openInFlight, openDone, skillDone, skillCancelSent;
+    private final SkillRequestFence fence = new SkillRequestFence();
+    private boolean skillActive, skillCancelPending;
+    private int skillCancelAttempts;
     private String skillEpoch, skillItem, skillField, claimedActionId, claimedItem, claimedField, lastIssuedActionId;
     private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
     private long claimedDeadline;
     private JsonObject skillGoal, pendingSkillResult;
-    private volatile JsonObject openResponse, skillResponse;
+    // Each in-flight v2 request keeps its own generation-tagged record, so a stale reply can never
+    // touch the current Skill and an old completion never clears the new in-flight flag.
+    private SkillRequestFence.Request openCall, goalCall, cancelCall;
+    private volatile SkillRequestFence.Completion openDone, goalDone, cancelDone;
     /** Control lease: a verified same-epoch/session/revision response keeps the action alive this long. */
     private static final long CONTROL_LEASE_NANOS = 5000000000L;
+    /** A cancel handshake is abandoned after this many unconfirmed attempts. */
+    private static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private static final class Completion {
         final String session; final int revision; final JsonObject response; final long received;
@@ -196,7 +203,9 @@ public final class ActionBridge {
         companion.stop(); active = null;
         state.replace(label);
         skillState.reset(state.session); skillState.revision = state.revision;
-        skillActive = true; skillCancelPending = false; skillEpoch = null;
+        // A new Skill is a new generation: every reply from the previous one is now stale.
+        fence.advance(); clearSkillCalls();
+        skillActive = true; skillCancelPending = false; skillCancelAttempts = 0; skillEpoch = null;
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
         skillGoal = goal; skillField = field; skillItem = name; skillCount = count;
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
@@ -230,10 +239,19 @@ public final class ActionBridge {
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; claimedField = null;
         if (notifyNull && skillEpoch != null && state.session != null) {
-            skillCancelPending = true; skillCancelSent = false;
+            skillCancelPending = true; skillCancelAttempts = 0;
+            // Fence out any outstanding goal/open so their replies cannot disturb the handshake.
+            fence.advance(); clearSkillCalls();
         } else {
-            skillActive = false; skillCancelPending = false; skillEpoch = null; lastIssuedActionId = null;
+            skillActive = false; skillCancelPending = false; skillCancelAttempts = 0;
+            skillEpoch = null; lastIssuedActionId = null;
+            fence.advance(); clearSkillCalls();
         }
+    }
+
+    private void clearSkillCalls() {
+        openCall = null; goalCall = null; cancelCall = null;
+        openDone = null; goalDone = null; cancelDone = null;
     }
 
     private boolean enqueueSkillResult(String actionId, int sequence, String status, String reason,
@@ -263,37 +281,47 @@ public final class ActionBridge {
 
     private void startSkillOpen() {
         final String session = state.session;
+        final SkillRequestFence.Request request = fence.open(session, System.nanoTime());
+        openCall = request;
         final JsonObject body = new JsonObject();
         body.addProperty("version", 2); body.addProperty("session", session);
-        openInFlight = true; openDone = false; nextPoll = System.nanoTime() + 1000000000L;
+        nextPoll = System.nanoTime() + 1000000000L;
         boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
             @Override public void run() {
                 JsonObject response = null;
                 try { response = client.post("/v2/execution/open", body); }
                 catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open unavailable ({})", e.getClass().getSimpleName()); }
-                finally { openResponse = response; openDone = true; }
+                finally { openDone = new SkillRequestFence.Completion(request, response, System.nanoTime()); }
             }
         });
         if (!accepted) {
-            openResponse = null; openDone = true;
+            openDone = new SkillRequestFence.Completion(request, null, System.nanoTime());
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill open executor rejected request");
         }
     }
 
-    private void startSkillGoal(final JsonObject goal) {
+    private void startSkillGoal(final JsonObject goal, final boolean cancel) {
+        final SkillRequestFence.Request request = cancel
+                ? fence.cancel(state.session, state.revision, skillEpoch, System.nanoTime())
+                : fence.goal(state.session, state.revision, skillEpoch, System.nanoTime());
+        if (cancel) { cancelCall = request; } else { goalCall = request; }
         final JsonObject body = skillEnvelope();
         body.add("goal", goal == null ? JsonNull.INSTANCE : goal);
-        skillInFlight = true; skillDone = false; nextPoll = System.nanoTime() + 1000000000L;
+        nextPoll = System.nanoTime() + 1000000000L;
         boolean accepted = io.execute(IoExecutors.Lane.CONTROL, new Runnable() {
             @Override public void run() {
                 JsonObject response = null;
                 try { response = client.post("/v2/goal", body); }
                 catch (Exception e) { LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control unavailable ({})", e.getClass().getSimpleName()); }
-                finally { skillResponse = response; skillDone = true; }
+                finally {
+                    SkillRequestFence.Completion completion = new SkillRequestFence.Completion(request, response, System.nanoTime());
+                    if (cancel) { cancelDone = completion; } else { goalDone = completion; }
+                }
             }
         });
         if (!accepted) {
-            skillResponse = null; skillDone = true;
+            SkillRequestFence.Completion completion = new SkillRequestFence.Completion(request, null, System.nanoTime());
+            if (cancel) { cancelDone = completion; } else { goalDone = completion; }
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Skill control executor rejected request");
         }
     }
@@ -302,81 +330,85 @@ public final class ActionBridge {
         if (owner == null || state.session == null) { closeSkill("disconnected", false); return; }
         long now = System.nanoTime();
         if (claimedActionId != null && active != null) {
-            if (!active.isEntityAlive() || !owner.isEntityAlive() || active.worldObj != owner.worldObj) {
-                finishSkillAction("failed", "companion_unavailable", 0);
-            } else if (active.getHealth() <= 6 || active.getDistanceSqToEntity(owner) > 1024) {
-                active.stop(); finishSkillAction("failed", "unsafe_state", 0);
-            } else if ("block".equals(claimedField)) {
-                if (active.mineResolved()) {
-                    int mined = Math.min(active.lastMined(), claimedMaxCount);
-                    String outcome = active.mineOutcome();
-                    if (mined > 0) { finishSkillAction("succeeded", outcome == null || outcome.isEmpty() ? "completed" : outcome, mined); }
-                    else { finishSkillAction("failed", outcome == null || outcome.isEmpty() ? "tool_unavailable" : outcome, 0); }
-                } else if (now >= claimedDeadline) {
-                    active.stop(); finishSkillAction("failed", "expired", 0);
-                } else if (active.lastResult().equals("path_not_found")) {
-                    active.stop(); finishSkillAction("failed", "path_not_found", 0);
-                }
-            } else if (active.pickupResolved()) {
-                int stored = Math.min(active.lastPickupStored(), claimedMaxCount);
-                String outcome = active.pickupOutcome();
-                if (stored > 0) { finishSkillAction("succeeded", outcome == null || outcome.isEmpty() ? "completed" : outcome, stored); }
-                else { finishSkillAction("failed", outcome == null || outcome.isEmpty() ? "inventory_full" : outcome, 0); }
-            } else if (now >= claimedDeadline) {
-                active.stop(); finishSkillAction("failed", "expired", 0);
-            } else if (active.lastResult().equals("path_not_found")) {
-                active.stop(); finishSkillAction("failed", "path_not_found", 0);
+            boolean mine = "block".equals(claimedField);
+            boolean resolved = mine ? active.mineResolved() : active.pickupResolved();
+            int stored = resolved ? Math.min(Math.max(mine ? active.lastMined() : active.lastPickupStored(), 0), claimedMaxCount) : 0;
+            String outcome = mine ? active.mineOutcome() : active.pickupOutcome();
+            boolean companionAlive = active.isEntityAlive();
+            boolean ownerAlive = owner != null && owner.isEntityAlive();
+            boolean sameWorld = companionAlive && ownerAlive && active.worldObj == owner.worldObj;
+            boolean unsafe = sameWorld && (active.getHealth() <= 6 || active.getDistanceSqToEntity(owner) > 1024);
+            boolean expired = now >= claimedDeadline;
+            boolean pathNotFound = sameWorld && active.lastResult().equals("path_not_found");
+            // A resolved outcome is final: a later unsafe state or deadline never rewrites count 0.
+            SkillTickPolicy.Decision decision = SkillTickPolicy.decide(mine, resolved, stored, outcome,
+                    companionAlive, ownerAlive, sameWorld, unsafe, expired, pathNotFound);
+            if (!decision.waiting()) { finishSkillAction(decision.status, decision.reason, decision.count); }
+        }
+        SkillRequestFence.Completion opened = openDone;
+        if (opened != null) {
+            openDone = null;
+            if (openCall == opened.request) { openCall = null; }
+            if (fence.current(opened.request)) {   // a stale generation is discarded, never fatal
+                if (!SkillRequestFence.validOpenAck(opened.request, opened.response)) { failSkill("disconnected"); return; }
+                skillEpoch = ActionProtocol.string(opened.response, "daemonEpoch");
             }
         }
-        if (openDone) {
-            openDone = false; openInFlight = false;
-            JsonObject response = openResponse; openResponse = null;
-            if (response == null) { failSkill("disconnected"); return; }
-            try {
-                if (!ActionProtocol.integer(response, "version", 2)
-                        || !ActionProtocol.string(response, "session").equals(state.session)) {
-                    throw new IllegalArgumentException("bad open response");
-                }
-                skillEpoch = ActionProtocol.string(response, "daemonEpoch");
-            } catch (RuntimeException e) { failSkill("disconnected"); return; }
-        }
         if (skillEpoch == null) {
-            if (!openInFlight && now >= nextPoll) { startSkillOpen(); }
+            if (openCall == null && now >= nextPoll) { startSkillOpen(); }
             return;
         }
         if (skillCancelPending) {
-            if (skillDone) {
-                skillDone = false; skillInFlight = false; skillResponse = null;
-                if (skillCancelSent) {
-                    skillActive = false; skillCancelPending = false; skillEpoch = null;
-                    lastIssuedActionId = null; skillCancelSent = false;
+            SkillRequestFence.Completion cancelled = cancelDone;
+            if (cancelled != null) {
+                cancelDone = null;
+                if (cancelCall == cancelled.request) { cancelCall = null; }
+                if (fence.current(cancelled.request)
+                        && SkillRequestFence.validCancelAck(cancelled.request, cancelled.response)) {
+                    finishCancelHandshake();
                     return;
                 }
-                // A response that predates the cancel is discarded; the null goal is still due.
+                // timeout / null / 409 / stale: not a completed handshake, so retry below.
             }
-            if (!skillInFlight && now >= nextPoll && !skillCancelSent) {
-                startSkillGoal(null);
-                skillCancelSent = true;
+            if (cancelCall == null && now >= nextPoll) {
+                if (skillCancelAttempts >= MAX_CANCEL_ATTEMPTS) {
+                    // The Daemon never confirmed the cancel: stop explicitly instead of waiting forever.
+                    failSkill("disconnected");
+                    return;
+                }
+                skillCancelAttempts++;
+                startSkillGoal(null, true);
             }
             return;
         }
-        if (skillDone) {
-            skillDone = false; skillInFlight = false;
-            JsonObject response = skillResponse; skillResponse = null;
-            consumeSkill(response);
+        SkillRequestFence.Completion completed = goalDone;
+        if (completed != null) {
+            goalDone = null;
+            if (goalCall == completed.request) { goalCall = null; }
+            if (fence.current(completed.request)) { consumeSkill(completed.request, completed.response); }
         }
-        if (!skillActive || skillInFlight || now < nextPoll) { return; }
+        if (!skillActive || goalCall != null || now < nextPoll) { return; }
         // Poll even while an action is outstanding: the response renews the control lease and lets
         // the Forge observe a Daemon-side cancellation before committing world changes.
-        startSkillGoal(skillGoal);
+        startSkillGoal(skillGoal, false);
     }
 
-    private void consumeSkill(JsonObject response) {
+    /** Locally stops immediately; only the network cancel handshake is awaited by the tick. */
+    private void finishCancelHandshake() {
+        skillActive = false; skillCancelPending = false; skillCancelAttempts = 0;
+        skillEpoch = null; lastIssuedActionId = null;
+        fence.advance(); clearSkillCalls();
+    }
+
+    private void consumeSkill(SkillRequestFence.Request request, JsonObject response) {
         if (response == null) { failSkill("disconnected"); return; }
         try {
-            SkillProtocol.validateView(response, state.session, state.revision, skillEpoch);
-            // A verified control response renews the lease for the action that is running.
-            if (active != null) { active.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS); }
+            SkillProtocol.validateView(response, request.session, request.revision, request.epoch);
+            // A verified control response renews the lease for the action that is running, but a
+            // response older than the lease window must not extend it.
+            if (active != null && System.nanoTime() - request.started <= CONTROL_LEASE_NANOS) {
+                active.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
+            }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
             if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
             if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.achieved); return; }
@@ -419,6 +451,7 @@ public final class ActionBridge {
             state.status = "running";
             active = companion;
             companion.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
+            companion.setActionDeadline(claimedDeadline);
             if (action.field().equals("block")) { companion.mineBlock(action.targetRef, action.block); }
             else { companion.pickupItem(action.targetRef, action.maxCount); }
             enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", action.field(), action.name(), 0);
@@ -460,9 +493,10 @@ public final class ActionBridge {
         }
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
-        skillActive = false; skillCancelPending = false; skillEpoch = null;
+        skillActive = false; skillCancelPending = false; skillCancelAttempts = 0; skillEpoch = null;
         state.goal = null; state.actionId = null; state.status = "idle";
         nextPoll = 0;
+        fence.advance(); clearSkillCalls();
     }
 
     private void failSkill(String reason) {
@@ -471,9 +505,10 @@ public final class ActionBridge {
             // A real collection already happened; deliver its receipt via flushPendingSkillResult.
             if (active != null) { active.stop(); active = null; }
             claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
-            skillActive = false; skillCancelPending = false; skillEpoch = null;
+            skillActive = false; skillCancelPending = false; skillCancelAttempts = 0; skillEpoch = null;
             state.goal = null; state.actionId = null; state.status = "idle";
             nextPoll = 0;
+            fence.advance(); clearSkillCalls();
             return;
         }
         if (skillActive && skillEpoch != null && claimedActionId != null && !skillState.known(claimedActionId)) {
@@ -485,9 +520,10 @@ public final class ActionBridge {
         }
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
-        skillActive = false; skillCancelPending = false; skillEpoch = null;
+        skillActive = false; skillCancelPending = false; skillCancelAttempts = 0; skillEpoch = null;
         state.goal = null; state.actionId = null; state.status = "idle";
         nextPoll = 0;
+        fence.advance(); clearSkillCalls();
         debugReply("指示を完了できなかったため停止しました（" + reason + "）。");
     }
 

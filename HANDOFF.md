@@ -3,10 +3,11 @@
 ## 最初に読むもの
 
 Skill Layer MVP（`collect_drop`）は [protocol/skill-layer.md](protocol/skill-layer.md) の仕様に沿って **実装済み**（MOD 0.0.12）。
-mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17、配置済み）。
+mine primitive（`mine_target`）は [protocol/mine-primitive.md](protocol/mine-primitive.md) の仕様に沿って **実装済み**（MOD 0.0.17）。
+Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済み**（MOD 0.0.18）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
-自動テストはPython 81件・Java 43件。基本の収集を実ゲームで確認済み（mine・部分収納・取消・経路失敗は未検証）。
+自動テストはPython 91件・Java 56件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -20,15 +21,30 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.17`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.17.jar`（SHA-256 `9847AE37AE8A91ED7357A2CDAB90FC18C45453A8E21E39F18ACC3EE04A89E681`）。0.0.16以前は `.disabled` |
-| Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`（mine count=1 / blocked 即終端を反映）。`--shutdown-token` 付き |
+| MODバージョン | `0.0.18`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.18.jar`（SHA-256 `7BDC6CF810AD8824D516A8FE50721166B0DA55C782E749E9F0209AE5C74E219D`）。0.0.17以前は `.disabled` |
+| Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **83件**・Java **48件**・Forgeビルド成功 |
+| 自動テスト | Python **91件**・Java **56件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
+
+## Skill Layer硬化 — review-7373e37 の P1〜5（0.0.18）
+
+`collect_block`/Plannerへ進む前のライフサイクル・安全性の増分。P2-6（表示/Social統合）とP2-7（restart script）は今回対象外。
+
+| 指摘 | 閉じたコード変更 | 追加した回帰テスト |
+| --- | --- | --- |
+| **P1-1** 取消後の成功receiptで旧Skillが終端しない | `skills.py` に `_close_if_settled()` を追加し、成功receiptを一度だけ精算した後の先着規則（取消が先なら `cancelled`、requested到達なら `completed`）を一箇所へ集約。成功分岐で `phase=="cancelling"` を新action発行・`selecting` 復帰より優先 | `test_skills.py`: `test_cancel_then_partial_success_settles_cancelled` / `test_cancel_then_success_at_requested_stays_cancelled` / `test_success_then_cancel_settles_cancelled` / `test_replace_then_old_success_settles_old_cancelled_only` / `test_cancelled_skill_stays_terminal_after_clock_advances` / `test_cancelled_skills_do_not_accumulate_in_other` |
+| **P1-2** 安全条件・期限が世界変更の後で評価される | 純粋クラス `SkillMutationGuard.java`（権限/owner/HP>6/距離≤32/lease/action期限/target同一性）を追加し、`CompanionEntity.mutationGuard` として `pickup` 収納直前と `breakBlock` の `setBlockToAir` 直前に配置。`CompanionEntity` に `setActionDeadline` を追加。`SkillTickPolicy.java` でtick判定を集約し、確定済みpositive outcomeを後のunsafe/expiredで0へ上書きしない（`ActionBridge.skillTick` が使用） | `SkillHardeningTest.java`: `mutationGuardBlocksUnsafeHealthAndOwnerLeash` / `mutationGuardChecksLeaseDeadlineTargetAndAuthority` / `aResolvedPositiveOutcomeIsFinalEvenWhenUnsafeOrExpired` / `aResolvedNegativeOutcomeUsesTheEntityReason` / `anUnresolvedActionReportsTheFirstSafetyFailure` |
+| **P1-3** 旧SkillのHTTP応答が新Skillの失敗として処理される | 純粋クラス `SkillRequestFence.java`（generation・session・revision・epoch・kind・開始時刻付き `Request`/`Completion`）を追加。`ActionBridge` の共有 `skillResponse/skillDone/...` を generation別の `openCall/goalCall/cancelCall`＋volatile `*Done` に置換し、新Skill/置換/session変更で `advance()`。古いgenerationの完了は破棄し、その完了で現在のin-flightを解除しない。古すぎる応答はleaseを延長しない | `SkillHardeningTest.java`: `advancingTheGenerationDiscardsOldRequests` / `openAckNeedsTheSameSessionAndAEpoch` / `cancelAckNeedsMatchingIdentityAndIdle` |
+| **P2-4** v2 legacy goalとSkillのrevision/取消管理が別 | `skill_protocol.py validate_goal` は v2 の文字列goalを `legacy_goal_unsupported`（400）で明示拒否、`goal:null` は取消として許可。`SkillManager` の `goals` 依存・`_legacy`/`_legacy_view` を削除し `daemon.py` を更新。v1 `/v1/goal` のlegacyは不変 | `test_skills.py`: `test_v2_rejects_legacy_string_goals_but_allows_null_cancel` |
+| **P2-5** cancel handshakeの失敗を成功扱いする | `startSkillGoal(goal, cancel)` と cancel専用 `Request` を追加。ACKは `SkillRequestFence.validCancelAck`（session/revision/epoch一致＋`status=="idle"`）のみ成功。timeout/null/409/staleは未完了として約1秒間隔で最大3回再試行し、未確認なら `failSkill("disconnected")` で安全停止（無限待機しない）。ローカル停止は `finishCancelHandshake` で通信を待たない。ACKを再送で成立させるため `skills.py` の `goal:null` を同一revisionでも冪等取消として受理 | `test_skills.py`: `test_null_cancel_is_idempotent_at_same_revision` ＋ `SkillHardeningTest.cancelAckNeedsMatchingIdentityAndIdle` |
+
+維持を確認した不変条件: `collect_drop` 成功条件、`mine` count=1、1 action = 1 world mutation、acquired/destroyed分離、receipt idempotency、terminal result immutability、control lease、result queue reservation、opaque/projection境界、Daemon tickからHTTP/LLMを呼ばないこと。
+
 
 ## 実装済みの機能
 

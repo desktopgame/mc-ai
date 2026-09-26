@@ -149,8 +149,8 @@ SKILL_TYPES = {"collect_drop": CollectDrop, "mine": Mine}
 
 
 class SkillManager:
-    def __init__(self, states, registry, clock=time.monotonic, goals=None):
-        self.states, self.registry, self.clock, self.goals = states, registry, clock, goals
+    def __init__(self, states, registry, clock=time.monotonic):
+        self.states, self.registry, self.clock = states, registry, clock
         self.lock = threading.Lock()
         self.active = OrderedDict()   # session -> Skill
         self.other = OrderedDict()    # skillInstanceId -> Skill (settling or terminal)
@@ -181,21 +181,22 @@ class SkillManager:
             raise SkillSyncError("not_opened")
         goal = parsed["goal"]
         revision = parsed["goalRevision"]
-        if isinstance(goal, str):
-            return self._legacy(session, revision, goal)
         with self.lock:
             now = self.clock()
             previous = self.revisions.get(session)
             if previous is not None and revision < previous:
                 raise SkillSyncError("stale_goal")
+            if goal is None:
+                # goal:null is an idempotent Skill cancellation: it must be accepted at the skill's
+                # own revision too, so a lost/retried cancel ACK still resolves to idle.
+                self._cancel_session(session, "stopped")
+                if previous is None or revision > previous:
+                    self.revisions[session] = revision
+                self.leases[session] = now
+                return self._empty_view(session, self.revisions[session])
             if previous is not None and revision == previous:
                 # Rejected polls (conflicting/stale) must not renew the lease.
                 return self._poll_locked(session, goal)
-            if goal is None:
-                self._cancel_session(session, "stopped")
-                self.revisions[session] = revision
-                self.leases[session] = now
-                return self._empty_view(session, revision)
             state = self._fresh_state(session)
             companion = state["companion"]
             if companion is None:
@@ -264,23 +265,6 @@ class SkillManager:
 
     def _cache(self, session):
         return self.states.view({"version": 1, "session": session})
-
-    def _legacy(self, session, revision, goal):
-        if self.goals is None:
-            raise SkillSyncError("unsupported_goal")
-        view = self.goals.update({"version": 1, "session": session, "goalRevision": revision, "goal": goal})
-        with self.lock:
-            self.leases[session] = self.clock()
-        return self._legacy_view(view)
-
-    def _legacy_view(self, view):
-        status = {"ready": "running", "succeeded": "completed", "thinking": "thinking"}.get(view["status"], view["status"])
-        action = None
-        if view.get("action"):
-            action = {"type": "legacy_action", "payload": view["action"]}
-        return {"version": 2, "session": view["session"], "daemonEpoch": self.registry.epoch,
-                "goalRevision": view["goalRevision"], "status": status, "error": view["error"],
-                "skill": None, "action": action}
 
     def _poll_locked(self, session, goal):
         skill = self.active.get(session)
@@ -357,6 +341,21 @@ class SkillManager:
         LOG.info("skill terminal session=%s kind=%s status=%s reason=%s progress=%d/%d",
                  skill.session, skill.kind, status, reason, skill.progress_count, skill.requested)
         self._expire_terminal()
+
+    def _close_if_settled(self, skill):
+        """Single first-wins rule after a receipt has been settled exactly once.
+
+        A cancel/replace that was already established closes the Skill as cancelled (even when the
+        requested count was reached), and a reached requested count completes it. A cancelled Skill
+        never issues a new action and never falls back into selecting.
+        """
+        if skill.phase == "cancelling":
+            self._finalize(skill, "cancelled", skill.cancel_reason or "replaced")
+            return True
+        if skill.progress_count >= skill.requested:
+            self._finalize(skill, "completed", "completed")
+            return True
+        return False
 
     def _expire_terminal(self):
         now = self.clock()
@@ -496,11 +495,12 @@ class SkillManager:
             skill.failures = 0
             skill.fence_sequence = issued_sequence
             skill.fence_until = self.clock() + SEARCH_WINDOW
-            if skill.progress_count >= skill.requested:
-                self._finalize(skill, "completed", "completed")
-            else:
-                skill.phase = "selecting"
-                self._step(skill)
+            # The count is now settled exactly once, so a cancel/replace that already won the race
+            # must close here and never issue a replacement action or reach completed.
+            if self._close_if_settled(skill):
+                return
+            skill.phase = "selecting"
+            self._step(skill)
             return
         if parsed["status"] == "cancelled":
             # Forge only cancels an action when it intentionally stopped it, so this is terminal.

@@ -37,6 +37,8 @@ public final class CompanionEntity extends EntityCreature {
     private boolean targetPickup;
     // Skill control lease: no world mutation after this nanoTime. Long.MAX_VALUE disables it (legacy pickup).
     private long controlDeadline = Long.MAX_VALUE;
+    // Skill action deadline: the Daemon's per-action timeout, also enforced at the mutation point.
+    private long actionDeadline = Long.MAX_VALUE;
     // Target-fixed Skill mine. minedStored survives stop() until the action receipt is sent.
     private int mineX, mineY, mineZ;
     private String mineBlockName = "";
@@ -101,6 +103,20 @@ public final class CompanionEntity extends EntityCreature {
     public int lastPickupStored() { return pickupStored; }
     public String pickupOutcome() { return pickupOutcome; }
     public void setControlDeadline(long value) { controlDeadline = value; }
+    public void setActionDeadline(long value) { actionDeadline = value; }
+
+    /**
+     * Final authority immediately before a Skill world mutation. Returns a failure reason, or null
+     * when the mutation is allowed. The Forge tick is only a safety net, so this must be checked at
+     * the exact point of {@code setBlockToAir} / the pickup store.
+     */
+    private String mutationGuard(boolean targetValid) {
+        EntityPlayer target = owner();
+        return SkillMutationGuard.evaluate(isEntityAlive(), target != null && target.isEntityAlive(),
+                target != null && worldObj == target.worldObj, targetValid,
+                getHealth(), target == null ? Double.NaN : getDistanceSqToEntity(target),
+                System.nanoTime(), controlDeadline, actionDeadline);
+    }
 
     /** Skill mine: break one fixed block position with the best available tool. */
     public void mineBlock(String targetRef, String blockName) {
@@ -253,6 +269,15 @@ public final class CompanionEntity extends EntityCreature {
 
     /** Breaks one block with the best tool, or fails tool_unavailable when a required tool is missing. */
     private void breakBlock(Block block, int x, int y, int z) {
+        Block current = worldObj.getBlock(x, y, z);
+        Object currentName = current == Blocks.air ? null : Block.blockRegistry.getNameForObject(current);
+        boolean targetValid = currentName != null && currentName.toString().equals(mineBlockName);
+        // Shared final guard immediately before the world mutation, so a health drop, owner leaving
+        // range or an expired lease/deadline between the tick and this line cannot be reported as 0.
+        String unsafe = mutationGuard(targetValid);
+        if (unsafe != null) {
+            resetMineProgress(); stop(); minedStored = 0; mineOutcome = unsafe; result("no_block_in_range"); return;
+        }
         // Re-check direct access immediately before mutating the world.
         if (!MineObstruction.accessible(worldObj, posX, posY + getEyeHeight(), posZ, x, y, z)) {
             resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
@@ -416,10 +441,9 @@ public final class CompanionEntity extends EntityCreature {
             if (getDistanceSqToEntity(item) <= 2.25D) {
                 getNavigator().clearPathEntity();
                 if (item.delayBeforeCanPickup > 0) { result("picking_up"); return; }
-                // Never mutate the world after the control lease has expired.
-                if (System.nanoTime() > controlDeadline) {
-                    stop(); pickupStored = 0; pickupOutcome = "disconnected"; result("no_item_in_range"); return;
-                }
+                // Shared final guard: authority, owner/leash, health, lease and deadline.
+                String unsafe = mutationGuard(true);
+                if (unsafe != null) { stop(); pickupStored = 0; pickupOutcome = unsafe; result("no_item_in_range"); return; }
                 collectTarget(item);
                 return;
             }

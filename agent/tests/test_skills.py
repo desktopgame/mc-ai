@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from skills import SkillManager, SEARCH_WINDOW, SKILL_DEADLINE
+from skills import SkillManager, SEARCH_WINDOW, SKILL_DEADLINE, CANCEL_GRACE, MAX_TERMINAL
 from execution_registry import ExecutionRegistry
 from state_cache import StateCache, SyncError
 from skill_protocol import SkillRequestError, SkillSyncError
@@ -344,6 +344,95 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(status["skill"]["result"]["status"], "cancelled")
         self.assertEqual(status["skill"]["result"]["progress"], {"requested": 3, "acquired": 0, "complete": True})
 
+    def test_cancel_then_partial_success_settles_cancelled(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        self.assertEqual(manager.update(goal(2, epoch=self.epoch, goal_type="null"))["status"], "idle")
+        # The world already changed before the cancel was observed: the count is kept, but the
+        # cancel that was established first wins and the Skill must never issue a new action.
+        manager.result(self.receipt(action, "succeeded", "completed",
+                                    {"acquired": {"item": "minecraft:log", "count": 2}}))
+        status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                 "skillInstanceId": action["skillInstanceId"]})
+        self.assertEqual(status["skill"]["result"]["status"], "cancelled")
+        self.assertEqual(status["skill"]["result"]["progress"], {"requested": 5, "acquired": 2, "complete": True})
+        self.assertIsNone(status["action"])
+
+    def test_cancel_then_success_at_requested_stays_cancelled(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=2)["action"]
+        self.assertEqual(action["maxCount"], 2)
+        manager.update(goal(2, epoch=self.epoch, goal_type="null"))
+        manager.result(self.receipt(action, "succeeded", "completed",
+                                    {"acquired": {"item": "minecraft:log", "count": 2}}))
+        status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                 "skillInstanceId": action["skillInstanceId"]})
+        # Reaching the requested count after a cancel must not turn it into completed.
+        self.assertEqual(status["skill"]["result"]["status"], "cancelled")
+        self.assertEqual(status["skill"]["result"]["progress"]["acquired"], 2)
+
+    def test_success_then_cancel_settles_cancelled(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4), "item-b": drop(6)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        manager.result(self.receipt(action, "succeeded", "completed",
+                                    {"acquired": {"item": "minecraft:log", "count": 2}}))
+        manager.update(goal(2, epoch=self.epoch, goal_type="null"))
+        self.now[0] = CANCEL_GRACE + 1
+        manager.tick()
+        status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                 "skillInstanceId": action["skillInstanceId"]})
+        self.assertEqual(status["skill"]["result"]["status"], "cancelled")
+        self.assertEqual(status["skill"]["result"]["progress"]["acquired"], 2)
+
+    def test_replace_then_old_success_settles_old_cancelled_only(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        newer = manager.update(goal(2, epoch=self.epoch, count=5))
+        self.assertIsNotNone(newer["action"])
+        self.assertNotEqual(newer["skill"]["skillInstanceId"], action["skillInstanceId"])
+        manager.result(self.receipt(action, "succeeded", "completed",
+                                    {"acquired": {"item": "minecraft:log", "count": 2}}))
+        old_status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                     "skillInstanceId": action["skillInstanceId"]})
+        self.assertEqual(old_status["skill"]["result"]["status"], "cancelled")
+        new_status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                     "skillInstanceId": newer["skill"]["skillInstanceId"]})
+        self.assertIsNone(new_status["skill"]["result"])
+        self.assertEqual(new_status["skill"]["phase"], "waiting_action")
+
+    def test_cancelled_skill_stays_terminal_after_clock_advances(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        manager.update(goal(2, epoch=self.epoch, goal_type="null"))
+        manager.result(self.receipt(action, "succeeded", "completed",
+                                    {"acquired": {"item": "minecraft:log", "count": 2}}))
+        self.now[0] = SKILL_DEADLINE + 80
+        manager.tick()
+        status = manager.status({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                 "skillInstanceId": action["skillInstanceId"]})
+        self.assertEqual(status["skill"]["result"]["status"], "cancelled")
+        self.assertEqual(status["skill"]["phase"], "terminal")
+
+    def test_cancelled_skills_do_not_accumulate_in_other(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        for i in range(130):
+            revision = i * 2 + 1
+            view = manager.update(goal(revision, epoch=self.epoch, count=5))
+            action = view["action"]
+            manager.update(goal(revision + 1, epoch=self.epoch, goal_type="null"))
+            if action is not None:
+                manager.result(self.receipt(action, "succeeded", "completed",
+                                            {"acquired": {"item": "minecraft:log", "count": 2}},
+                                            revision=revision))
+        self.assertLessEqual(len(manager.other), MAX_TERMINAL)
+        self.assertTrue(all(skill.phase == "terminal" for skill in manager.other.values()))
+
     def test_revision_and_epoch_guards(self):
         states, manager, self.epoch = self.create()
         self.accept(manager, 2, count=2)
@@ -377,6 +466,29 @@ class SkillTests(unittest.TestCase):
             manager.update({"version": 2, "session": "world", "daemonEpoch": self.epoch, "goalRevision": 1,
                             "goal": {"type": "collect_drop", "target": {"item": "minecraft:log"},
                                      "count": 1, "constraints": [{"type": "avoid_entity"}]}})
+
+    def test_null_cancel_is_idempotent_at_same_revision(self):
+        states, manager, self.epoch = self.create()
+        states.update(snapshot(items={"item-a": drop(4)}, seq=1), True)
+        action = self.accept(manager, 1, count=5)["action"]
+        first = manager.update(goal(1, epoch=self.epoch, goal_type="null"))
+        self.assertEqual(first["status"], "idle")
+        second = manager.update(goal(1, epoch=self.epoch, goal_type="null"))
+        self.assertEqual(second["status"], "idle")
+        self.assertEqual(second["goalRevision"], 1)
+        self.assertIsNone(second["action"])
+
+    def test_v2_rejects_legacy_string_goals_but_allows_null_cancel(self):
+        states, manager, self.epoch = self.create()
+        self.accept(manager, 1, count=2)
+        for legacy in ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items", "nope"):
+            with self.assertRaises(SkillRequestError):
+                manager.update({"version": 2, "session": "world", "daemonEpoch": self.epoch,
+                                "goalRevision": 2, "goal": legacy})
+        # A null goal remains the only v2 Skill cancellation path.
+        view = manager.update(goal(2, epoch=self.epoch, goal_type="null"))
+        self.assertEqual(view["status"], "idle")
+        self.assertEqual(view["action"], None)
 
     def test_http_v2_lifecycle(self):
         states, manager, self.epoch = self.create()

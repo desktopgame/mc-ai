@@ -8,7 +8,7 @@ SUPPORTED_ITEMS = ("minecraft:log", "minecraft:cobblestone", "minecraft:iron_ing
 SUPPORTED_BLOCKS = ("minecraft:log", "minecraft:log2", "minecraft:cobblestone", "minecraft:stone",
                     "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
                     "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel")
-LEGACY_GOALS = ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")
+LEGACY_GOALS = ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")  # v1 /goal only
 CAPABILITIES = ("collect_drop_v1", "mine_v1")
 
 TOP_STATUS = ("idle", "thinking", "running", "completed", "failed", "cancelled")
@@ -146,9 +146,10 @@ def validate_goal(data):
     if goal is None:
         parsed = None
     elif isinstance(goal, str):
-        if goal not in LEGACY_GOALS:
-            raise SkillRequestError("unsupported_goal")
-        parsed = goal
+        # v2 no longer accepts legacy string goals: the shared revision/ownership contract between
+        # the legacy GoalManager and the Skill layer does not exist, so the union is closed here.
+        # Legacy operations continue to use the v1 /goal path.
+        raise SkillRequestError("legacy_goal_unsupported")
     else:
         parsed = parse_goal_object(goal)
     return {"version": 2, "session": session, "daemonEpoch": epoch, "goalRevision": rev, "goal": parsed}

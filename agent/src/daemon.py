@@ -241,7 +241,7 @@ def main():
         server.states = StateCache()
         server.goals = GoalManager(server.states, decisions)
         server.registry = ExecutionRegistry()
-        server.skills = SkillManager(server.states, server.registry, goals=server.goals)
+        server.skills = SkillManager(server.states, server.registry)
         server.shutdown_token = args.shutdown_token
         stop = threading.Event()
         ticker = threading.Thread(target=_tick_loop, args=(server.skills, stop), daemon=True, name="mcai-skills")
