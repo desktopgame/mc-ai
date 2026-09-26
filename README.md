@@ -56,7 +56,7 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - `collect_drop` / `mine` の意味・入口・結果は変更していない。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.27.jar`。
-2026-09-26: Python **143件**・Java **82件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。world/session切替でterminal cursorをリセット。
+2026-09-26: Python **146件**・Java **82件**とビルドに成功。実ゲームで `!agent do collect_block minecraft:log 5` の原木収集を確認済み。skill/action binding検証とterminal result厳密parseを追加。terminal台帳は有界（closedはexact 100件＋digest 1024件で再生成防止）・fingerprintでclosed衝突検出・deep copy・CONTROL laneは実競合時のみSkill制御を優先（active Skillではterminal pollを停止しない）。world/session切替でterminal cursorをリセット。
 
 ## Skill終端 → Social発話 — Phase 1〜5 / protocol 2
 
@@ -67,7 +67,7 @@ Skillの `completed / failed / cancelled` を、確定済み terminal result を
 - reasonは辞書で意味を固定（`mined` は「Nブロック破壊」、`acquired` は累積取得。未知reasonは推測せず enum 表示）。`complete=false` は「確定分は…。未確定の操作があります。」を付ける。
 - Forgeは `skill_terminal_social_v1` がある時だけ新経路を使い、`TerminalDeliveryState`（純粋・first-wins）で identity ごとに一度だけ表示。**旧Daemonでは従来の終端表示を維持**する。
 - **Phase 4（0.0.26）**: `ConversationQueue` を `USER_CHAT`/`SKILL_TERMINAL` のtyped entryへ拡張（chat 4件・2048字維持、terminal待機枠8件、単一FIFO）。`PingBridge` が両種を同一順序で処理し、terminalは会話contextを初期化して表示（typed commandだけでも通知可）。待機terminalは12秒でFIFO例外として先行chat中でも表示。forget/退出で未表示terminalは旧会話として表示または抑制。`TerminalPollCursor` をworld/session切替でリセットし、新sessionはeventSequence=1から取得。
-- **Phase 5（0.0.27）**: 既存providerで候補選択。`render_candidates` が friendly/calm/concise の**事実完全な3候補**（≤512、Python/Java同一）を生成し、`LocalSocialProvider.select_terminal` が候補IDのenumに限定した厳密schema＋8秒deadlineで1つ選ぶ。`/v2/social/skill-terminal` は台帳で二重呼び出しを防ぎ、provider未設定/busy/例外/予算超過は固定fallback（mode=fallback、同一say）。transport情報はLLMへ送らない。
+- **Phase 5（0.0.27）**: 既存providerで候補選択。`render_candidates` が friendly/calm/concise の**事実完全な3候補**（≤512、Python/Java同一）を生成し、`LocalSocialProvider.select_terminal` が候補IDのenumに限定した厳密schema＋8秒deadlineで1つ選ぶ。`/v2/social/skill-terminal` は台帳で二重呼び出しを防ぎ、provider未設定/busy/例外/予算超過は固定fallback（mode=fallback、同一say）。transport情報はLLMへ送らない。terminal presentationは通常chatと**同じconversation履歴を読むが書かない**（履歴登録はPhase 6のdisplayed ACK後）。presentation生成競合は**first-wins**（generating中のduplicateはfallbackを確定し、遅いprovider結果は上書きしない）。
 - 未実装（Phase 6）: delivery ACKによる会話履歴登録、Forgeからの present/ACK 送出（現状Forge表示は固定fallbackのまま）。実ゲーム未確認。
 
 生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.27.jar`。

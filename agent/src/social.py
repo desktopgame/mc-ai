@@ -291,9 +291,12 @@ class SocialBrain:
             user = {"role": "user", "content": "確定記録: " + json.dumps(fact, ensure_ascii=False)
                     + "\n候補: " + json.dumps(candidates, ensure_ascii=False)
                     + "\nこの候補から variantId を1つ選んでください。"}
+            # The same conversation identity/history as normal chat is read, but never written here:
+            # history registration happens only after a real displayed ACK (Phase 6).
+            history = self.histories.get(session, [])
             messages, _ = self.budget.prepare(
                 {"role": "system", "content": self.persona + "\n" + TERMINAL_INSTRUCTIONS},
-                [], user, TERMINAL_RESPONSE_FORMAT)
+                history, user, TERMINAL_RESPONSE_FORMAT)
             variant = select(messages, variant_ids)
             say = next(candidate["say"] for candidate in candidates if candidate["variantId"] == variant)
             return {"say": say, "variantId": variant, "mode": "social"}

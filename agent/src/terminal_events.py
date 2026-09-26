@@ -137,14 +137,17 @@ class TerminalEventStore:
                                              conversationSession, player, deliveryId)
         if state == "existing":
             return payload
-        if state == "generating":
-            return {"say": payload, "variantId": "fallback", "mode": "fallback"}
         return self.present_finish(epoch, session, skillInstanceId, terminalId, conversationSession, player,
-                                   deliveryId, {"say": payload["__fallback__"], "variantId": "fallback", "mode": "fallback"})
+                                   deliveryId, {"say": payload["__fallback__"], "variantId": "fallback",
+                                                "mode": "fallback"}, payload["__fallback__"])
 
     def present_begin(self, epoch, session, skillInstanceId, terminalId, conversationSession, player, deliveryId):
-        """Reserves the presentation slot. Returns ("existing", result) | ("generating", fallback) |
-        ("owner", event). The provider must be called by the owner outside this lock."""
+        """Reserves the presentation slot. Returns ("existing", result) | ("owner", event).
+
+        A duplicate while another request is still generating commits the fallback as ready here: the
+        presentation is decided first-wins, so a later provider answer can never diverge from what a
+        duplicate (and its possible ACK) already saw.
+        """
         identity = (epoch, session, skillInstanceId, terminalId)
         binding = (conversationSession, player, deliveryId)
         with self.lock:
@@ -153,7 +156,10 @@ class TerminalEventStore:
                 if entry["binding"] != binding:
                     raise TerminalError("binding_conflict")
                 if entry["state"] == "generating":
-                    return "generating", entry.get("fallback")
+                    entry["state"] = "ready"
+                    entry["say"] = entry["fallback"]
+                    entry["variantId"] = "fallback"
+                    entry["mode"] = "fallback"
                 return "existing", self._presentation_result(entry)
             if identity in self.closed:
                 raise TerminalError("terminal_gone")
@@ -173,16 +179,22 @@ class TerminalEventStore:
             return "owner", result
 
     def present_finish(self, epoch, session, skillInstanceId, terminalId, conversationSession, player,
-                       deliveryId, result):
-        """Stores the chosen presentation once. Idempotent; a concurrent finisher returns the stored one."""
+                       deliveryId, result, fallback_text=None):
+        """Stores the chosen presentation once. First-wins: an already ready/closed presentation is not
+        overwritten, so a late provider answer cannot contradict what a duplicate already returned."""
         identity = (epoch, session, skillInstanceId, terminalId)
         binding = (conversationSession, player, deliveryId)
         with self.lock:
             entry = self.presentations.get(identity)
             if entry is None:
-                if identity in self.closed:
+                closed = self.closed.get(identity)
+                if closed is None:
+                    raise TerminalError("unknown_terminal")
+                ack = closed.get("ack")
+                if ack is not None and ack[1] == result["variantId"]:
                     return {"say": result["say"], "variantId": result["variantId"], "mode": result["mode"]}
-                raise TerminalError("unknown_terminal")
+                return {"say": fallback_text if fallback_text is not None else result["say"],
+                        "variantId": "fallback", "mode": "fallback"}
             if entry["binding"] != binding:
                 raise TerminalError("binding_conflict")
             if entry["state"] == "generating":

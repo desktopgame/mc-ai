@@ -40,10 +40,12 @@ class _StubProvider:
         self.variant = variant
         self.error = error
         self.calls = 0
+        self.last_messages = None
     def reply(self, messages): return "x"
     def reply_with_intent(self, messages): return {"reply": "x", "intent": "none"}
     def select_terminal(self, messages, variant_ids):
         self.calls += 1
+        self.last_messages = messages
         if self.error:
             raise SocialError(self.error)
         return self.variant if self.variant in variant_ids else variant_ids[0]
@@ -81,6 +83,27 @@ class PresentationTests(unittest.TestCase):
                 brain.present_terminal("conv", self.event())
         finally:
             brain.lock.release()
+
+    def test_present_terminal_reads_conversation_history_without_writing_it(self):
+        import json as _json
+        provider = _StubProvider(variant="calm")
+        brain = SocialBrain(provider)
+        key = ("conv", "Steve")
+        brain.chat(key, "こんにちは")
+        before = list(brain.histories[key])
+        result = brain.present_terminal(key, self.event())
+        self.assertEqual(result["variantId"], "calm")
+        joined = _json.dumps(provider.last_messages, ensure_ascii=False)
+        self.assertIn("こんにちは", joined)                 # same history as normal chat
+        self.assertEqual(brain.histories[key], before)      # read-only: history unchanged
+
+    def test_present_terminal_does_not_mix_other_conversations(self):
+        import json as _json
+        provider = _StubProvider(variant="calm")
+        brain = SocialBrain(provider)
+        brain.chat(("convA", "Steve"), "秘密の話")
+        brain.present_terminal(("convB", "Alex"), self.event())
+        self.assertNotIn("秘密の話", _json.dumps(provider.last_messages, ensure_ascii=False))
 
 
 class FixtureTests(unittest.TestCase):
@@ -261,6 +284,26 @@ class StoreTests(unittest.TestCase):
                 other = "fallback" if outcome == "suppressed" else None
                 store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
                               "suppressed" if outcome == "displayed" else "displayed", other)
+
+    def test_generating_duplicate_commits_fallback_first_wins(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        state_a, data_a = store.present_begin("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        self.assertEqual(state_a, "owner")
+        state_b, result_b = store.present_begin("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        self.assertEqual((state_b, result_b["mode"], result_b["variantId"]), ("existing", "fallback", "fallback"))
+        # A's slower provider answer must not override the fallback already returned to B.
+        result_a = store.present_finish("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                                        {"say": "friendly-say", "variantId": "friendly", "mode": "social"},
+                                        data_a["__fallback__"])
+        self.assertEqual(result_a, result_b)
+        # After the fallback ACK, a late provider finish still resolves to the ACKed fallback.
+        store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        late = store.present_finish("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                                    {"say": "friendly-say", "variantId": "friendly", "mode": "social"},
+                                    data_a["__fallback__"])
+        self.assertEqual((late["variantId"], late["mode"]), ("fallback", "fallback"))
 
     def test_present_and_deliver_idempotency_and_conflicts(self):
         store = TerminalEventStore(clock=lambda: 0.0)
