@@ -39,6 +39,9 @@ public final class TerminalDeliveryState {
 
     public boolean known(String identity) { return pending.containsKey(identity) || closed.containsKey(identity); }
 
+    /** True once the identity was displayed or suppressed and can no longer be shown. */
+    public boolean resolved(String identity) { return !pending.containsKey(identity) && closed.containsKey(identity); }
+
     /** Timeout path: first-wins display of the fixed fallback. Null when already displayed. */
     public String finishFallback(String identity) {
         Entry entry = pending.get(identity);

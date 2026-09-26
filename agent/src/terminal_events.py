@@ -207,16 +207,33 @@ class TerminalEventStore:
     def deliver(self, epoch, session, skillInstanceId, terminalId, conversationSession, player,
                 deliveryId, outcome, variant_id):
         """Applies an ACK. Returns {"first", "say", "variantId", "mode", "event"}: `first` is True only
-        for the transition into delivered/suppressed, so the caller registers history exactly once."""
+        for the transition into delivered/suppressed, so the caller registers history exactly once.
+
+        The ACK is authoritative enough to close a terminal even when no presentation was made (queue
+        full / 12s timeout / executor reject) or when the provider answer did not reach the Forge: in
+        those cases the fixed snapshot fallback is settled first-wins, and a displayed ACK must name
+        `fallback`. No free text is ever accepted from the caller.
+        """
+        from terminal_presentation import render_fallback
         identity = (epoch, session, skillInstanceId, terminalId)
         binding = (conversationSession, player, deliveryId)
         with self.lock:
-            entry = self.presentations.get(identity)
             event = self.by_session.get((epoch, session), {}).get(identity)
-            if entry is None:
-                closed = self.closed.get(identity)
-                if closed is None:
+            entry = self.presentations.get(identity)
+            closed = self.closed.get(identity)
+            if entry is None and closed is None:
+                # present was never called: the ACK itself fixes the binding, using the snapshot.
+                if event is None:
                     raise TerminalError("unknown_terminal")
+                if outcome == "displayed" and variant_id is not None and variant_id != "fallback":
+                    raise TerminalError("ack_conflict")
+                state = "delivered" if outcome == "displayed" else "suppressed"
+                say = render_fallback(event) if outcome == "displayed" else None
+                self._close_entry(identity, {"state": state, "binding": binding,
+                                             "ack": (outcome, variant_id), "fingerprint": _fingerprint(event)})
+                return {"first": True, "say": say, "variantId": "fallback", "mode": "fallback",
+                        "event": copy.deepcopy(event)}
+            if entry is None:
                 if closed["binding"] is not None and closed["binding"] != binding:
                     raise TerminalError("binding_conflict")
                 if closed["state"] in ("delivered", "suppressed"):
@@ -233,14 +250,24 @@ class TerminalEventStore:
                     return {"first": False, "say": entry["say"], "variantId": entry["variantId"],
                             "mode": entry["mode"], "event": None}
                 raise TerminalError("ack_conflict")
-            # A displayed ACK must name the presentation that was actually offered, so a client cannot
-            # swap in a different wording (or a social variant after a fallback was committed).
-            if outcome == "displayed" and entry["variantId"] is not None and variant_id != entry["variantId"]:
-                raise TerminalError("ack_conflict")
-            result = {"first": True, "say": entry["say"], "variantId": entry["variantId"], "mode": entry["mode"],
+            say, variant, mode = entry["say"], entry["variantId"], entry["mode"]
+            if outcome == "displayed":
+                if entry["state"] == "generating" or entry["variantId"] is None:
+                    # Presentation still generating: settle the fixed fallback first-wins.
+                    say, variant, mode = (render_fallback(event) if event is not None else None), "fallback", "fallback"
+                elif variant_id == entry["variantId"]:
+                    pass   # the offered social variant is what was displayed
+                elif variant_id == "fallback":
+                    # The social answer never reached the Forge, which displayed the fixed fallback.
+                    say, variant, mode = (render_fallback(event) if event is not None else None), "fallback", "fallback"
+                else:
+                    raise TerminalError("ack_conflict")
+            result = {"first": True, "say": say, "variantId": variant, "mode": mode,
                       "event": copy.deepcopy(event) if event is not None else None}
             entry["state"] = "delivered" if outcome == "displayed" else "suppressed"
             entry["ack"] = (outcome, variant_id)
+            if outcome == "displayed":
+                entry["say"], entry["variantId"], entry["mode"] = say, variant, mode
             self._close_entry(identity, entry)
             return result
 

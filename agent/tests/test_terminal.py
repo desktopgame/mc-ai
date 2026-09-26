@@ -305,6 +305,63 @@ class StoreTests(unittest.TestCase):
                                     data_a["__fallback__"])
         self.assertEqual((late["variantId"], late["mode"]), ("fallback", "fallback"))
 
+    def test_deliver_without_presentation_uses_snapshot_fallback(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        result = store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        self.assertTrue(result["first"])
+        self.assertEqual(result["say"], render_fallback(snap))
+        self.assertEqual(result["event"]["skillInstanceId"], "s-1")
+        self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])   # outbox closed
+        again = store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        self.assertFalse(again["first"])
+        with self.assertRaises(TerminalError):   # a fallback-only delivery cannot name a social variant
+            store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "suppressed", None)
+
+    def test_deliver_without_presentation_suppressed_closes_without_history(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        result = store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "suppressed", None)
+        self.assertTrue(result["first"])
+        self.assertIsNone(result["say"])
+        self.assertEqual(store.snapshot("boot", "world", after_sequence=0)["events"], [])
+
+    def test_deliver_during_generation_settles_fallback_first_wins(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        store.present_begin("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        result = store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        self.assertTrue(result["first"])
+        self.assertEqual(result["say"], render_fallback(snap))
+        # A late social provider answer is discarded.
+        late = store.present_finish("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                                    {"say": "friendly-say", "variantId": "friendly", "mode": "social"}, result["say"])
+        self.assertEqual(late["variantId"], "fallback")
+
+    def test_ready_social_accepts_a_fallback_display(self):
+        store = TerminalEventStore(clock=lambda: 0.0)
+        snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
+        store.record(snap)
+        store.present_begin("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        store.present_finish("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                             {"say": "friendly-say", "variantId": "friendly", "mode": "social"}, render_fallback(snap))
+        # The social answer did not reach the Forge, which displayed the fixed fallback.
+        result = store.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "fallback")
+        self.assertTrue(result["first"])
+        self.assertEqual((result["variantId"], result["mode"]), ("fallback", "fallback"))
+        self.assertEqual(result["say"], render_fallback(snap))
+        # A conflicting social ACK still fails.
+        store2 = TerminalEventStore(clock=lambda: 0.0)
+        store2.record(snap)
+        store2.present_begin("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1")
+        store2.present_finish("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1",
+                              {"say": "friendly-say", "variantId": "friendly", "mode": "social"}, render_fallback(snap))
+        with self.assertRaises(TerminalError):
+            store2.deliver("boot", "world", "s-1", "t-1", "conv", "Steve", "d-1", "displayed", "other")
+
     def test_present_and_deliver_idempotency_and_conflicts(self):
         store = TerminalEventStore(clock=lambda: 0.0)
         snap = {k: event(skill_id="s-1", terminal_id="t-1")[k] for k in event() if k != "eventSequence"}
@@ -494,9 +551,23 @@ class HttpTests(unittest.TestCase):
         present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-5",
                    "terminalId": "t-5", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-5"}
         self.post("/v2/social/skill-terminal", present)   # ready as "friendly"
+        # A mismatched social variant is rejected; the fixed fallback is an allowed alternative.
         self.assertEqual(self.post("/v2/social/terminal-delivery",
-                                   dict(present, outcome="displayed", variantId="fallback"))[0], 409)
+                                   dict(present, outcome="displayed", variantId="other"))[0], 409)
         self.assertEqual(brain.histories.get(("conv", "Steve"), []), [])
+
+    def test_fallback_ack_without_present_registers_history(self):
+        brain = SocialBrain(_StubProvider(variant="friendly"))
+        self.server.brain = brain
+        snap = {k: event(skill_id="s-6", terminal_id="t-6", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-6",
+                   "terminalId": "t-6", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-6"}
+        self.assertEqual(self.post("/v2/social/terminal-delivery",
+                                   dict(present, outcome="displayed", variantId="fallback"))[1]["accepted"], True)
+        key = ("conv", "Steve")
+        self.assertEqual(len(brain.histories.get(key, [])), 2)
+        self.assertEqual(brain.histories[key][1]["content"], render_fallback(snap))
 
     def test_forget_retires_conversation_for_history(self):
         brain = SocialBrain(_StubProvider(variant="calm"))
