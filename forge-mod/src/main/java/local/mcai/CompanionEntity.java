@@ -31,6 +31,7 @@ public final class CompanionEntity extends EntityCreature {
     private final FollowRetry pathRetry = new FollowRetry();
     // Target-fixed Skill pickup. The stored count survives stop() until the action receipt is sent.
     private String pickupTargetId = "";
+    private String pickupItemName = "";
     private int pickupMaxCount;
     private int pickupStored = -1;
     private String pickupOutcome = "";
@@ -89,11 +90,12 @@ public final class CompanionEntity extends EntityCreature {
     public void deposit() { stop(); task = "deposit"; result("depositing"); }
 
     /** Skill pickup: follow one fixed dropped-item UUID and store at most maxCount. */
-    public void pickupItem(String targetRef, int maxCount) {
+    public void pickupItem(String targetRef, int maxCount, String itemName) {
         stop();
         task = "pickup";
         targetPickup = true;
         pickupTargetId = targetRef.startsWith("item-") ? targetRef.substring("item-".length()) : targetRef;
+        pickupItemName = itemName;
         pickupMaxCount = maxCount;
         pickupStored = -1;
         pickupOutcome = "";
@@ -179,6 +181,12 @@ public final class CompanionEntity extends EntityCreature {
             if (item.isDead || !item.getUniqueID().toString().equals(pickupTargetId)) { continue; }
             ItemStack stack = item.getEntityItem();
             if (stack == null || stack.stackSize <= 0) { continue; }
+            // Re-check the registry name even though the UUID matched: the same entity id may now hold
+            // a different item, which must be treated as target_lost rather than collected.
+            if (!pickupItemName.isEmpty()) {
+                Object name = Item.itemRegistry.getNameForObject(stack.getItem());
+                if (name == null || !name.toString().equals(pickupItemName)) { continue; }
+            }
             if (item.getDistanceSqToEntity(this) > ITEM_RANGE_SQUARED) { continue; }
             return item;
         }

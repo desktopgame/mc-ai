@@ -1,8 +1,7 @@
 # collect_block MVP — 実装指示書
 
-状態: **Daemon層のみ実装済み（段階①②）。Forge接続は未実装。** 調査基点 `c5d491c`、MOD 0.0.20。
+状態: **Daemon・Forge とも実装済み（MOD 0.0.21）。実ゲーム検証は未。** 調査基点 `c5d491c`、MOD 0.0.20 → 0.0.21。
 既存の [Skill Layer](skill-layer.md) と [mine primitive](mine-primitive.md) を利用する。
-本書は次の実装担当が読む指示書。今回の文書作成ではコード変更・起動・jar配置は行わない。
 
 ### 実装状況（2026-09-26 更新）
 
@@ -12,11 +11,15 @@
   §6 のreceipt検証は descriptor基準で共通化（sequence/payload種類/target ID/count上限、running/succeeded/failed/cancelledの
   reason・count固定、terminal Skillでも同一検証、late runningはACKのみ）。§7 の wait_drop/recover_drop は stage固有の
   絶対deadline（mine receipt＋6秒 / 最初のrecovery失敗＋6秒）で、poll・候補入れ替えで延長しない。
-  回帰テストは `agent/tests/test_collect_block.py`（26件）＋既存 `test_skills.py`。Python 117件。
-- **未実装（次増分 / MOD 0.0.21予定）**: Forge側（§10 の Forge行、§11 UI、capability確認、新しい入口
-  `!agent do collect_block minecraft:log <n>`）、§6 のForge descriptor照合、§13 のForge/統合・実ゲームテスト。
-  Daemonは capability を広告済みのため、Forgeは capability を確認してから新goalを送る必要がある（未対応Daemonへ
-  mine/collect_dropとして代替送信しない）。
+  回帰テストは `agent/tests/test_collect_block.py`（27件）＋既存 `test_skills.py`。Python 118件。
+- **実装済み（Forge / MOD 0.0.21）**: §4 のcapability確認（未広告なら代替送信しない）、§5 の view解析（collect_blockの
+  3カウンタunion）、§6 のcurrent action種類をdescriptor単位で分離（mine/pickup混在）、§10 の受付（`!agent do collect_block`）・
+  `SkillProtocol.java` の `COLLECT_BLOCK_ITEMS`、§11 の表示（acquired/mined/complete、未確定表示）。実収納直前のitem同一性
+  確認を `CompanionEntity.pickupItem` に追加。Javaテストは `SkillProtocolTest` に collect_block 解析・対応表・capability・
+  混合sequenceを追加（Java 70件）。
+- **未実装/要確認**: §13 のForge/統合の実配送テスト（ActionBridgeはMinecraft依存のため未）、実ゲーム検証。Daemon再起動と
+  ゲーム再起動（0.0.21読み込み）が必要。`protocol/collect-block.md` の「実ゲーム」節は未消化。
+  §13 Forge例外ケースの `!agent do collect_block minecraft:log <n>` は実ゲームで未確認。
 
 ## 1. 目的・MVPの範囲
 

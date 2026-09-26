@@ -99,6 +99,73 @@ public class SkillProtocolTest {
         reject(o -> o.getAsJsonObject("skill").getAsJsonObject("progress").addProperty("complete", "yes"));
     }
 
+    @Test public void parsesACollectBlockView() {
+        JsonObject o = new JsonParser().parse("{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\",\"goalRevision\":2,"
+                + "\"status\":\"running\",\"error\":null,"
+                + "\"skill\":{\"skillInstanceId\":\"s\",\"type\":\"collect_block\",\"target\":{\"block\":\"minecraft:log\"},"
+                + "\"phase\":\"waiting_action\",\"progress\":{\"requested\":5,\"acquired\":2,\"mined\":3,\"complete\":false},\"result\":null},"
+                + "\"action\":null}").getAsJsonObject();
+        SkillProtocol.validateView(o, "world", 2, "boot");
+        SkillProtocol.Skill skill = SkillProtocol.skill(o);
+        assertEquals("block", skill.field);
+        assertEquals("minecraft:log", skill.name);
+        assertEquals(5, skill.requested);
+        assertEquals(2, skill.acquired);
+        assertEquals(3, skill.mined);
+        assertEquals(2, skill.achieved);   // success is measured by acquired, never by mined
+        assertFalse(skill.complete);
+    }
+
+    @Test public void collectBlockProgressUnionIsStrict() {
+        String base = "{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\",\"goalRevision\":2,"
+                + "\"status\":\"running\",\"error\":null,"
+                + "\"skill\":{\"skillInstanceId\":\"s\",\"type\":\"collect_block\",\"target\":{\"block\":\"minecraft:log\"},"
+                + "\"phase\":\"waiting_action\",\"progress\":%s,\"result\":null},\"action\":null}";
+        // Missing mined / extra key / acquired over requested are all rejected.
+        for (String progress : new String[] {
+                "{\"requested\":5,\"acquired\":2,\"complete\":false}",
+                "{\"requested\":5,\"acquired\":2,\"mined\":3,\"complete\":false,\"extra\":1}",
+                "{\"requested\":2,\"acquired\":3,\"mined\":0,\"complete\":false}"}) {
+            JsonObject o = new JsonParser().parse(String.format(base, progress)).getAsJsonObject();
+            try { SkillProtocol.validateView(o, "world", 2, "boot"); SkillProtocol.skill(o); fail("accepted " + progress); }
+            catch (IllegalArgumentException expected) { }
+        }
+    }
+
+    @Test public void unsupportedCollectBlockTargetAndMapping() {
+        assertEquals("minecraft:log", SkillProtocol.collectItemFor("minecraft:log"));
+        assertNull(SkillProtocol.collectItemFor("minecraft:dirt"));
+        assertEquals("collect_block_v1", SkillProtocol.capabilityFor("collect_block"));
+        assertEquals("mine_v1", SkillProtocol.capabilityFor("mine"));
+        JsonObject o = new JsonParser().parse("{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\",\"goalRevision\":1,"
+                + "\"status\":\"running\",\"error\":null,"
+                + "\"skill\":{\"skillInstanceId\":\"s\",\"type\":\"collect_block\",\"target\":{\"block\":\"minecraft:dirt\"},"
+                + "\"phase\":\"selecting\",\"progress\":{\"requested\":1,\"acquired\":0,\"mined\":0,\"complete\":false},\"result\":null},"
+                + "\"action\":null}").getAsJsonObject();
+        try { SkillProtocol.validateView(o, "world", 1, "boot"); SkillProtocol.skill(o); fail("accepted unsupported block"); }
+        catch (IllegalArgumentException expected) { }
+    }
+
+    @Test public void parsesCapabilities() {
+        JsonObject o = new JsonParser().parse("{\"version\":2,\"session\":\"world\",\"daemonEpoch\":\"boot\","
+                + "\"capabilities\":[\"collect_drop_v1\",\"mine_v1\",\"collect_block_v1\"]}").getAsJsonObject();
+        java.util.Set<String> caps = SkillProtocol.capabilities(o);
+        assertTrue(caps.contains("collect_block_v1"));
+        assertFalse(SkillProtocol.capabilities(new JsonObject()).contains("collect_block_v1"));
+    }
+
+    @Test public void executionStateHandlesAMixedSkillSequence() {
+        SkillExecutionState state = new SkillExecutionState();
+        state.reset("world"); state.revision = 1;
+        assertTrue(state.claim("A1", 1)); state.complete("succeeded", "completed", 1);   // mine
+        assertTrue(state.claim("A2", 2)); state.complete("succeeded", "completed", 2);   // pickup
+        assertTrue(state.claim("A3", 3)); state.complete("succeeded", "completed", 1);   // mine again
+        assertFalse(state.claim("A1", 1));   // an old action never re-runs
+        assertFalse(state.claim("A3", 3));   // nor a settled one
+        assertTrue(state.known("A1"));
+        assertTrue(state.known("A3"));
+    }
+
     @Test public void executionStatePreventsReexecutionAndBoundsTheLedger() {
         SkillExecutionState state = new SkillExecutionState();
         state.reset("world"); state.revision = 3;

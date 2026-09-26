@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from skills import SkillManager, DROP_WINDOW, SEARCH_WINDOW
 from execution_registry import ExecutionRegistry
 from state_cache import StateCache
-from skill_protocol import SkillRequestError, SkillSyncError
+from skill_protocol import SkillRequestError, SkillSyncError, COLLECT_BLOCK_TARGETS
 
 
 def snapshot(items=None, blocks=None, inventory=None, seq=0, session="world", companion="companion"):
@@ -59,6 +59,10 @@ class CollectBlockTests(unittest.TestCase):
                 "acquired": {"item": "minecraft:log", "count": count}}
 
     # ---- goal validation -------------------------------------------------
+    def test_collect_block_mapping_is_the_fixed_mvp_pair(self):
+        # This literal is mirrored by the Forge mapping (SkillProtocol.COLLECT_BLOCK_ITEMS); keep both.
+        self.assertEqual(COLLECT_BLOCK_TARGETS, {"minecraft:log": {"block": "minecraft:log", "item": "minecraft:log"}})
+
     def test_goal_validation(self):
         states, manager = self.create()
         for bad_count in (0, 65, True, 2.5, "3"):

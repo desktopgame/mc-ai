@@ -16,6 +16,7 @@ import org.apache.logging.log4j.LogManager;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /** Game-thread authority; control, results and Social each have independent bounded workers. */
 public final class ActionBridge {
@@ -41,7 +42,9 @@ public final class ActionBridge {
     private boolean skillActive, skillCancelPending;
     private int skillCancelAttempts;
     private String skillEpoch, skillItem, skillField, claimedActionId, claimedItem, claimedField, lastIssuedActionId;
-    private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence;
+    private String skillCapability, lastIssuedField, lastIssuedName;
+    private int skillCount, claimedSequence, claimedMaxCount, lastIssuedSequence, lastIssuedMaxCount;
+    private Set<String> skillCapabilities = java.util.Collections.emptySet();
     private long claimedDeadline;
     private JsonObject skillGoal, pendingSkillResult;
     // Each in-flight v2 request owns its completion, so a stale worker can never erase a newer
@@ -138,9 +141,18 @@ public final class ActionBridge {
             requestMine(event.player, parts[3]);
             return;
         }
+        if (parts.length == 5 && parts[2].equals("collect_block")) {
+            int count;
+            try { count = Integer.parseInt(parts[4]); } catch (NumberFormatException error) { reply("使い方: !agent do collect_block <ブロック> <個数>"); return; }
+            if (SkillProtocol.collectItemFor(parts[3]) == null || count < 1 || count > 64) {
+                reply("使い方: !agent do collect_block <ブロック> <個数> (1-64)"); return;
+            }
+            requestCollectBlock(event.player, parts[3], count);
+            return;
+        }
         if (parts.length != 3 || !(parts[2].equals("follow") || parts[2].equals("look") || parts[2].equals("stop")
                 || parts[2].equals("pickup") || parts[2].equals("deposit"))) {
-            reply("使い方: !agent do follow / look / stop / pickup / deposit / collect_drop <アイテム> <個数> / mine <ブロック>"); return;
+            reply("使い方: !agent do follow / look / stop / pickup / deposit / collect_drop <アイテム> <個数> / mine <ブロック> / collect_block <ブロック> <個数>"); return;
         }
         requestGoal(event.player, parts[2].equals("follow") ? "follow_owner" : parts[2].equals("look") ? "look_at_owner"
                 : parts[2].equals("pickup") ? "pickup_item" : parts[2].equals("deposit") ? "deposit_items" : "stop", null);
@@ -191,6 +203,14 @@ public final class ActionBridge {
         return startSkill(player, goal, "block", block, 1, "mine");
     }
 
+    private boolean requestCollectBlock(EntityPlayerMP player, String block, int count) {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("type", "collect_block");
+        JsonObject target = new JsonObject(); target.addProperty("block", block); goal.add("target", target);
+        goal.addProperty("count", count); goal.add("constraints", new JsonArray());
+        return startSkill(player, goal, "block", block, count, "collect_block");
+    }
+
     private boolean startSkill(EntityPlayerMP player, JsonObject goal, String field, String name, int count, String label) {
         synchronize(player);
         MinecraftServer server = MinecraftServer.getServer();
@@ -209,6 +229,7 @@ public final class ActionBridge {
         skillActive = true; skillCancelPending = false; skillCancelAttempts = 0; skillEpoch = null;
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
         skillGoal = goal; skillField = field; skillItem = name; skillCount = count;
+        skillCapability = SkillProtocol.capabilityFor(label);
         expectedCompanion = companion.getUniqueID().toString(); expectedDimension = player.dimension;
         nextPoll = 0;
         debugReply("新しい指示を受け付けました。判断を待っています。");
@@ -234,7 +255,9 @@ public final class ActionBridge {
                     skillState.complete("cancelled", reason, 0);
                 }
             } else if (lastIssuedActionId != null && !skillState.known(lastIssuedActionId)) {
-                enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, skillField, skillItem, 0);
+                String field = lastIssuedField != null ? lastIssuedField : skillField;
+                String name = lastIssuedName != null ? lastIssuedName : skillItem;
+                enqueueSkillResult(lastIssuedActionId, lastIssuedSequence, "cancelled", reason, field, name, 0);
             }
         }
         if (active != null) { active.stop(); active = null; }
@@ -349,6 +372,13 @@ public final class ActionBridge {
                 if (fence.current(open)) {   // a stale generation is discarded, never fatal
                     if (!SkillRequestFence.validOpenAck(open, opened.response)) { failSkill("disconnected"); return; }
                     skillEpoch = ActionProtocol.string(opened.response, "daemonEpoch");
+                    // Never send a goal the Daemon did not advertise: no silent fallback to mine/collect_drop.
+                    skillCapabilities = SkillProtocol.capabilities(opened.response);
+                    if (skillCapability != null && !skillCapabilities.contains(skillCapability)) {
+                        reply("このDaemonは " + state.goal + " に未対応です（capability不足）。");
+                        failSkill("unsupported_goal");
+                        return;
+                    }
                 }
             } else if (open.expired(now, REQUEST_TIMEOUT_NANOS)) {
                 openCall = null;   // lost completion: abandon so a fresh open can be sent
@@ -425,10 +455,11 @@ public final class ActionBridge {
             if (active != null) { active.setControlDeadline(now + CONTROL_LEASE_NANOS); }
             SkillProtocol.Skill skill = SkillProtocol.skill(response);
             if (skill != null) { skillState.skillInstanceId = skill.skillInstanceId; }
-            if (skill != null && skill.resultStatus != null) { finishSkill(skill.resultStatus, skill.resultReason, skill.achieved); return; }
+            if (skill != null && skill.resultStatus != null) { finishSkill(skill); return; }
             SkillProtocol.Action action = SkillProtocol.action(response);
             if (action == null) { return; }
             lastIssuedActionId = action.actionId; lastIssuedSequence = action.sequence;
+            lastIssuedField = action.field(); lastIssuedName = action.name(); lastIssuedMaxCount = action.maxCount;
             if (claimedActionId != null || skillState.known(action.actionId)) { return; }
             if (owner == null) { failSkill("owner_unavailable"); return; }
             CompanionEntity companion = CompanionCommands.find(owner);
@@ -467,7 +498,7 @@ public final class ActionBridge {
             companion.setControlDeadline(System.nanoTime() + CONTROL_LEASE_NANOS);
             companion.setActionDeadline(claimedDeadline);
             if (action.field().equals("block")) { companion.mineBlock(action.targetRef, action.block); }
-            else { companion.pickupItem(action.targetRef, action.maxCount); }
+            else { companion.pickupItem(action.targetRef, action.maxCount, action.item); }
             enqueueSkillResult(action.actionId, action.sequence, "running", "accepted", action.field(), action.name(), 0);
         } catch (RuntimeException e) {
             LogManager.getLogger(CompanionMod.MOD_ID).warn("Rejected skill view ({})", e.getClass().getSimpleName());
@@ -496,14 +527,28 @@ public final class ActionBridge {
         }
     }
 
-    private void finishSkill(String status, String reason, int achieved) {
+    private void finishSkill(SkillProtocol.Skill skill) {
+        String status = skill.resultStatus, reason = skill.resultReason;
+        boolean collectBlock = "collect_block".equals(skill.type);
         if ("completed".equals(status)) {
-            reply("block".equals(skillField) ? skillItem + " を採掘しました。" : skillItem + "を" + skillCount + "個集めました。");
+            if (collectBlock) {
+                reply(skill.name + "を" + skill.acquired + "個集めました（採掘" + skill.mined + "ブロック）。");
+            } else if ("block".equals(skillField)) {
+                reply(skillItem + " を採掘しました。");
+            } else {
+                reply(skillItem + "を" + skillCount + "個集めました。");
+            }
         } else if ("cancelled".equals(status)) {
-            debugReply("指示を取り消しました。");
+            // A final result is shown even when verbose chat is off.
+            if (collectBlock) { reply("取り消しました。回収" + skill.acquired + "/" + skill.requested + "、採掘" + skill.mined + "。"); }
+            else { debugReply("指示を取り消しました。"); }
+        } else if (collectBlock) {
+            String text = "失敗[" + reason + "] 回収" + skill.acquired + "/" + skill.requested + "、採掘" + skill.mined + "。";
+            if (!skill.complete) { text += "未確定の操作があります。"; }
+            reply(text);
         } else {
             // Lead with the fixed reason so it stays visible even when the chat line wraps.
-            reply("失敗[" + reason + "] " + skillItem + " " + achieved + "/" + skillCount);
+            reply("失敗[" + reason + "] " + skillItem + " " + skill.achieved + "/" + skillCount);
         }
         if (active != null) { active.stop(); active = null; }
         claimedActionId = null; claimedItem = null; claimedField = null; lastIssuedActionId = null;
@@ -526,8 +571,8 @@ public final class ActionBridge {
             return;
         }
         if (skillActive && skillEpoch != null && claimedActionId != null && !skillState.known(claimedActionId)) {
-            String field = claimedField != null ? claimedField : skillField;
-            String name = claimedItem != null ? claimedItem : skillItem;
+            String field = claimedField != null ? claimedField : lastIssuedField != null ? lastIssuedField : skillField;
+            String name = claimedItem != null ? claimedItem : lastIssuedName != null ? lastIssuedName : skillItem;
             if (enqueueSkillResult(claimedActionId, claimedSequence, "failed", reason, field, name, 0)) {
                 skillState.complete("failed", reason, 0);
             }

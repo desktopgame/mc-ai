@@ -37,8 +37,26 @@ LLMを必須とせず、`!agent do collect_drop <アイテム> <個数>` と typ
 - mineの進捗は破壊数（`mined`）で、`collect_drop` の取得progressとは混ぜない。
 - `collect_drop` の意味・成功条件は変更していない。`collect_block` / `collect(log,N)` は未実装。
 
-生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.20.jar`。Daemonも同じ版へ更新する。
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.21.jar`。Daemonも同じ版へ更新する。
 2026-09-26: Python **83件**・Java **48件**とビルドに成功。実ゲームで `!agent do mine` の経時破壊と、ガラス越しの `blocked`（原木は破壊されない）を確認済み。回り込める壁越しの採掘・leaves越し・count境界は未検証。
+
+## collect_block — 0.0.21 / protocol 2
+
+`collect_block(block, count)` を、Daemonが `mine_target` と `pickup_target` を順序づけるSkillとして追加した。詳細は [collect_block MVP](protocol/collect-block.md) を参照。
+
+| 入力 | 動作 |
+| --- | --- |
+| `!agent do collect_block minecraft:log 5` | v2 `/v2/goal`（`type:collect_block`）→ 近くの原木dropを拾い、無ければ原木を1本ずつ掘って落ちた原木を回収し、累積5個で完了 |
+
+- **成功条件は `acquired`**（このSkillのpickupで実際に収納した数）。`mined`（破壊数）は副作用カウンタで成功条件ではない。開始前の所持品は数えない。
+- 対象はMVPでは `minecraft:log` のみ（block→item対応表）。countは1〜64。
+- mine成功では完了せず、新しい観測を待って落ちた原木を回収する（mine receiptから6秒、pollでは延長しない）。回収が成功するまで次のmineへ戻らない。
+- 取消・終端では確定済みの `acquired`/`mined` を保持する。失敗理由に `drop_unavailable` を追加。
+- Forgeは `/v2/execution/open` の `capabilities` に `collect_block_v1` が無ければ新goalを送らず安全停止する（mine/collect_dropへ代替送信しない）。
+- `collect_drop` / `mine` の意味・入口・結果は変更していない。
+
+生成jarは `forge-mod/build/libs/mc-ai-companion-0.0.21.jar`。
+2026-09-26: Python **118件**・Java **70件**とビルドに成功。実ゲーム検証は未。
 
 ## コンテキスト予算 — Daemon
 
@@ -393,7 +411,7 @@ javac -version
 
 `forge.ps1` はJDK 8とプロジェクト内のGradleキャッシュを選択して、`forge-mod/gradlew.bat -p forge-mod --no-daemon --console plain` に引数を渡す。終了時には元の環境変数へ戻す。
 
-成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.20`。バージョンは `forge-mod/build.gradle` で管理する）。
+成果物は `forge-mod/build/libs/mc-ai-companion-<version>.jar`（現在は `0.0.21`。バージョンは `forge-mod/build.gradle` で管理する）。
 開発クライアントのゲームディレクトリは `forge-mod/run`。
 現行MODの初期化メッセージは `MC AI Companion initialized (Action lifecycle)`。以下のPhase 5のログ例は当時の記録。
 
@@ -405,7 +423,7 @@ javac -version
 同一MODの複数バージョンが有効にならないようにする。配置したjarのSHA-256も表示する。
 
 ```powershell
-.\scripts\deploy-mod.ps1 -Version 0.0.20
+.\scripts\deploy-mod.ps1 -Version 0.0.21
 ```
 
 Daemonの入れ替えも専用スクリプトを使う。コマンドラインで対象を特定して古いDaemonを停止し、停止できなければ起動せず中断する。

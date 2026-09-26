@@ -12,7 +12,7 @@ Skill Layer硬化（review-7373e37 のP1〜5）を **実装・自動テスト済
 block観測のcandidate品質改善（表面露出フィルタ）を **実装・実機確認済み**（MOD 0.0.19）。
 Daemon の `agent/src/skill_protocol.py` / `execution_registry.py` / `skills.py`、Forge の `SkillProtocol.java` / `SkillExecutionState.java` と既存クラスへの追加。
 入口は `!agent do collect_drop <アイテム> <個数>` と `!agent do mine <ブロック>`、v2 typed protocol。Planner・`collect_block`/`collect(log,N)`・自然文からの引数抽出は範囲外。
-自動テストはPython 117件・Java 65件。基本の収集とmineを実ゲームで確認済み。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
+自動テストはPython 118件・Java 70件。基本の収集・mine・collect_blockを実ゲームで確認予定。硬化（P1〜5）は自動テスト範囲で、実機の危険条件は未検証。
 
 このファイル → [init.md](init.md)（設計仕様）→ [README.md](README.md) → 必要に応じて [Agent README](agent/README.md) と [行動ライフサイクル](protocol/action-lifecycle.md)。
 `init.md` に作業ログを追加しない。READMEのバージョン別の節は当時の検証記録として読む。
@@ -26,12 +26,12 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 | 項目 | 確認結果 |
 | --- | --- |
 | Git HEAD | `403e605` 時点からSkill Layer / mine primitiveを実装（本ドキュメント更新前は未コミット） |
-| MODバージョン | `0.0.20`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
-| Prismの有効MOD | `mc-ai-companion-0.0.20.jar`（SHA-256 `A48F305FA65C03C0FD552C1822DEEE1946DDFD69ED535FEB95FB7910B5DD4B4A`）。0.0.19以前は `.disabled` |
+| MODバージョン | `0.0.21`（`forge-mod/build.gradle` と `CompanionMod` の両方で管理）。Prism配置済み |
+| Prismの有効MOD | `mc-ai-companion-0.0.21.jar`（SHA-256 `4A43D4EDBB8A41FBA96AE66E58A9727120A3F060E4541AA2DC84270544EE09BF`）。0.0.20以前は `.disabled` |
 | Daemon | PID `43416` が `127.0.0.1:8767` で待受。`protocol 1+2, social=True`。**P1-1/P2-4のDaemon修正は再起動後に反映**（`--shutdown-token` 付き） |
 | LM Studio | PID `21708` が `127.0.0.1:1234` で待受。`unsloth/gemma-4-26b-a4b-it` |
 | Minecraft | 終了状態 |
-| 自動テスト | Python **117件**・Java **65件**・Forgeビルド成功 |
+| 自動テスト | Python **118件**・Java **70件**・Forgeビルド成功 |
 
 プロセス・HEAD・作業ツリーは変化するため、次回は必ず再確認する。PIDファイルやこの表だけを根拠に停止しない。
 **反映済み・確認済み。** ガラス越しの原木で `blocked` 経路が実機動作（原木は破壊されない）。0.0.17 で失敗文言を `失敗[blocked] minecraft:log 0/1`（理由を先頭の短い形）に変更し、実機で表示を確認済み。block観測は typeごと最近傍4・合計最大32、経時破壊は0.0.14で実機確認済み。
@@ -62,9 +62,9 @@ Phase 6（Game Actions）に着手済みで、`pickup` / `deposit` の2操作と
 
 stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillRequestFence.fresh(...)`。completionのdelivery: request-scoped `Request.completion`。lost completion: `Request.expired(...)` による有界timeout（open/goalは再送、cancelは3回上限）。
 
-## collect_block Daemon層 — 段階①②（MOD版は据え置き 0.0.20、Forge接続は0.0.21）
+## collect_block — Daemon層＋Forge接続（0.0.21）
 
-指示書 [protocol/collect-block.md](protocol/collect-block.md) のうちDaemon層のみ実装。Forge側は次増分。
+指示書 [protocol/collect-block.md](protocol/collect-block.md) をDaemon・Forgeとも実装（**実ゲーム確認済み**）。
 
 - `skill_protocol.py`: collect_block goal解析（blockは `COLLECT_BLOCK_TARGETS` のみ、count1〜64、constraints空のみ、未知キー拒否）、capability `collect_block_v1`、終端理由 `drop_unavailable`。
 - `skills.py`: **発行action descriptor台帳**へ組み替え。`SkillManager.result` の `target_field` 前提を外し、`_apply_result` は descriptor の payloadField（item→acquired / block→mined）で一度だけ精算。mine_target と pickup_target を同一Skillで交互発行できる。`collect_drop`/`mine` の意味・view・progressは不変。
@@ -74,8 +74,14 @@ stale responseのreject箇所: `ActionBridge.consumeSkill` 入口の `SkillReque
   - **descriptor基準のreceipt検証を共通化**（`_validate_receipt`）: actionId→descriptorを引き、`actionSequence`/`payloadField`/`targetCanonicalId`/`count<=maxCount` を毎回照合。`running`=accepted+0、`succeeded`=completed+1..maxCount、`failed`/`cancelled`=0 を固定。duplicate terminal=ACK、late running=ACKのみ（progress不変）、矛盾terminal=409、未知actionId=unknown_action。terminal Skillでも同じ検証。
   - **wait_drop/recover_dropをstage固有の絶対deadlineへ分離**: `wait_deadline = mine receipt + DROP_WINDOW`、`recover_deadline = 最初のrecovery失敗 + DROP_WINDOW`。poll/候補入れ替えで延長しない。wait_dropはnewer観測なしで期限到達→`stale_state`、newer観測ありでitemなし→`drop_unavailable`。recover_dropは回収成功まで次mineへ戻らない。generic `_fence_ready()` はselect_sourceのみで使用（simple Skillのfence挙動は不変）。
   - 追加テスト: descriptor不一致/種類違い/ID違い/succeeded count0/reason不正/late running ACK/terminalでのdescriptor検証、wait deadline固定/poll非延長/境界、recover deadline非延長・次mine禁止、120秒上限。
-- テスト件数: Python **117件**（collect_block 26件）。
-- 未実装: Forgeの受付・capability確認・UI（§11）・実ゲーム検証。Daemonは `collect_block_v1` を広告済みなので、Forgeはcapability確認後にのみ新goalを送ること。
+- テスト件数: Python **118件**（collect_block 27件）・Java **70件**。
+- **Forge接続（0.0.21）**:
+  - `SkillProtocol.java`: `collect_block` の type/target/progress union（`requested/acquired/mined/complete`、acquired・mined≦requested）を厳密解析。`COLLECT_BLOCK_ITEMS`（block→item対応表、現状 log→log）と `capabilityFor`/`collectItemFor`/`capabilities`。
+  - `ActionBridge.java`: 入口 `!agent do collect_block <ブロック> <個数>`。open応答のcapabilitiesを確認し、`collect_block_v1` 未広告なら**mine/collect_dropへ代替送信せず**メッセージして安全停止。current action種類は descriptor ごとに `claimedField` で判定（mine/pickup混在）。`finishSkill` は §11 表示（完了「…をN個集めました（採掘Mブロック）」／失敗「失敗[reason] 回収A/R、採掘M」／取消「取り消しました。回収A/R、採掘M」／complete=falseなら「未確定の操作があります。」）。
+  - `CompanionEntity.java`: `pickupItem(targetRef,maxCount,itemName)` に拡張し、UUID一致でもregistry名不一致なら `target_lost`（実収納直前の同一性確認）。mine/pickupは既存を再利用。
+  - `SkillExecutionState.java`: 同一Skill内の mine→pickup→mine で sequence前進・旧actionId再実行禁止を確認（追加テスト）。変更なし。
+  - 追加テスト: `SkillProtocolTest` の collect_block view解析・progress union厳密性・対応表/capability・capability解析・混合sequence。Daemon側 `COLLECT_BLOCK_TARGETS` とJava `COLLECT_BLOCK_ITEMS` の一致は両言語のfixtureで固定（Python側 `test_collect_block_mapping_is_the_fixed_mvp_pair`）。
+- 未実装/要確認: 実ゲーム検証。**Daemonは再起動しないと `collect_block_v1` 未広告の旧コードのまま**で、MOD側のcapability確認により collect_block は「未対応」で止まる。ゲームも 0.0.21 読み込みに再起動が必要。
 
 
 ## 実装済みの機能

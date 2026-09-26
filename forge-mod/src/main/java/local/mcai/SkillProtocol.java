@@ -12,8 +12,28 @@ public final class SkillProtocol {
             "minecraft:log", "minecraft:log2", "minecraft:cobblestone", "minecraft:stone",
             "minecraft:coal_ore", "minecraft:iron_ore", "minecraft:gold_ore",
             "minecraft:diamond_ore", "minecraft:dirt", "minecraft:sand", "minecraft:gravel"));
+    /** collect_block MVP: the explicit block -> collected item mapping (mirrors the Daemon table). */
+    public static final Map<String, String> COLLECT_BLOCK_ITEMS;
+    static {
+        Map<String, String> collect = new LinkedHashMap<String, String>();
+        collect.put("minecraft:log", "minecraft:log");
+        COLLECT_BLOCK_ITEMS = Collections.unmodifiableMap(collect);
+    }
+    public static final List<String> COLLECT_BLOCKS = Collections.unmodifiableList(
+            new ArrayList<String>(COLLECT_BLOCK_ITEMS.keySet()));
     public static final List<String> STATUS = Collections.unmodifiableList(Arrays.asList(
             "idle", "thinking", "running", "completed", "failed", "cancelled"));
+
+    /** The item a collect_block goal collects, or null when the block is unsupported. */
+    public static String collectItemFor(String block) { return COLLECT_BLOCK_ITEMS.get(block); }
+
+    /** The capability a Skill needs from the Daemon; collect_drop/mine reuse their v1 capability. */
+    public static String capabilityFor(String type) {
+        if (type.equals("collect_drop")) { return "collect_drop_v1"; }
+        if (type.equals("mine")) { return "mine_v1"; }
+        if (type.equals("collect_block")) { return "collect_block_v1"; }
+        return null;
+    }
 
     private static void keys(JsonObject o, String... names) {
         Set<String> actual = new HashSet<String>();
@@ -96,31 +116,41 @@ public final class SkillProtocol {
 
     public static final class Skill {
         public final String skillInstanceId, type, name, field, phase;
-        public final int requested, achieved;
+        public final int requested, achieved, acquired, mined;
         public final boolean complete;
         public final String resultStatus, resultReason;
         Skill(JsonObject o) {
             keys(o, "skillInstanceId", "type", "target", "phase", "progress", "result");
             skillInstanceId = string(o, "skillInstanceId");
             type = string(o, "type");
-            if (type.equals("collect_drop")) { field = "item"; }
-            else if (type.equals("mine")) { field = "block"; }
-            else { throw new IllegalArgumentException("Unknown skill"); }
             JsonObject target = o.getAsJsonObject("target");
-            keys(target, field);
-            name = string(target, field);
-            if (field.equals("item") ? !ITEMS.contains(name) : !BLOCKS.contains(name)) {
-                throw new IllegalArgumentException("Unsupported target");
+            if (type.equals("collect_drop")) {
+                field = "item"; keys(target, "item"); name = string(target, "item");
+                if (!ITEMS.contains(name)) { throw new IllegalArgumentException("Unsupported target"); }
+            } else if (type.equals("mine")) {
+                field = "block"; keys(target, "block"); name = string(target, "block");
+                if (!BLOCKS.contains(name)) { throw new IllegalArgumentException("Unsupported target"); }
+            } else if (type.equals("collect_block")) {
+                field = "block"; keys(target, "block"); name = string(target, "block");
+                if (!COLLECT_BLOCKS.contains(name)) { throw new IllegalArgumentException("Unsupported target"); }
+            } else {
+                throw new IllegalArgumentException("Unknown skill");
             }
             phase = string(o, "phase");
             JsonObject progress = o.getAsJsonObject("progress");
             Set<String> progressKeys = new HashSet<String>();
             for (Map.Entry<String, JsonElement> e : progress.entrySet()) { progressKeys.add(e.getKey()); }
-            if (!progressKeys.equals(new HashSet<String>(Arrays.asList("requested", field.equals("item") ? "acquired" : "mined", "complete")))) {
-                throw new IllegalArgumentException("Unexpected progress fields");
-            }
+            Set<String> expected;
+            if (type.equals("collect_drop")) { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "complete")); }
+            else if (type.equals("mine")) { expected = new HashSet<String>(Arrays.asList("requested", "mined", "complete")); }
+            else { expected = new HashSet<String>(Arrays.asList("requested", "acquired", "mined", "complete")); }
+            if (!progressKeys.equals(expected)) { throw new IllegalArgumentException("Unexpected progress fields"); }
             requested = integer(progress, "requested", 1, 64);
-            achieved = integer(progress, field.equals("item") ? "acquired" : "mined", 0, 64);
+            if (type.equals("mine")) { mined = integer(progress, "mined", 0, 64); acquired = 0; }
+            else if (type.equals("collect_drop")) { acquired = integer(progress, "acquired", 0, 64); mined = 0; }
+            else { acquired = integer(progress, "acquired", 0, 64); mined = integer(progress, "mined", 0, 64); }
+            if (acquired > requested || mined > requested) { throw new IllegalArgumentException("Progress over requested"); }
+            achieved = type.equals("mine") ? mined : acquired;
             JsonElement done = progress.get("complete");
             if (done == null || !done.isJsonPrimitive() || !done.getAsJsonPrimitive().isBoolean()) {
                 throw new IllegalArgumentException("Expected boolean");
@@ -141,5 +171,17 @@ public final class SkillProtocol {
         JsonElement value = view.get("skill");
         if (value == null || value.isJsonNull()) { return null; }
         return new Skill(value.getAsJsonObject());
+    }
+
+    /** Parses the open response capability list. Missing/unexpected entries are ignored defensively. */
+    public static Set<String> capabilities(JsonObject open) {
+        Set<String> result = new HashSet<String>();
+        JsonElement value = open.get("capabilities");
+        if (value != null && value.isJsonArray()) {
+            for (JsonElement entry : value.getAsJsonArray()) {
+                if (entry.isJsonPrimitive() && entry.getAsJsonPrimitive().isString()) { result.add(entry.getAsString()); }
+            }
+        }
+        return result;
     }
 }
