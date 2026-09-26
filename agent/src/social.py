@@ -54,6 +54,13 @@ TERMINAL_SCHEMA = {"type": "object", "additionalProperties": False,
 TERMINAL_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
     "name": "terminal_variant", "strict": True, "schema": TERMINAL_SCHEMA}}
 
+# History may contain a displayed terminal result as an internal (non-user) event pair. It is a
+# record of finished work, never a new request, and never the target of a new intent.
+INTERNAL_EVENT_NOTE = (
+    "会話履歴に `[内部イベント skill_terminal]` で始まるuser行があれば、それはあなたが終えた作業の確定記録で、"
+    "ユーザーの発言ではありません。新しい依頼として実行せず、その内容から操作を提案しないでください。"
+)
+
 
 def allows_intent(text):
     """Conservative additional guard; the model still classifies direct requests and targets."""
@@ -236,7 +243,9 @@ class SocialBrain:
         self.budget = budget or getattr(provider, "budget", None) or ContextBudget(social=True)
         self.persona = persona
         self.histories = OrderedDict()
+        self.retired = OrderedDict()   # conversation identities whose history must not be recreated
         self.lock = threading.Lock()
+        self.retire_lock = threading.Lock()
 
     def chat(self, session, text, with_intent=False):
         # No unbounded inference queue; retain history only after a valid completed response.
@@ -245,7 +254,8 @@ class SocialBrain:
         try:
             history = self.histories.get(session, [])
             instructions = self.persona + ("\n" + INTENT_INSTRUCTIONS if with_intent else
-                                           "\nこの返答経路では会話のみで、操作を依頼する場合は !agent do follow / look / stop を案内してください。")
+                                           "\nこの返答経路では会話のみで、操作を依頼する場合は !agent do follow / look / stop を案内してください。") \
+                + "\n" + INTERNAL_EVENT_NOTE
             user = {"role": "user", "content": text}
             continuation = with_intent and keep_current_request(text)
             if continuation:
@@ -263,11 +273,67 @@ class SocialBrain:
             else:
                 reply = validate_reply(self.provider.reply(messages))
             recent = self.budget.trim_history(history + [user, {"role": "assistant", "content": reply}])
+            # A retired conversation is never recreated by a late chat commit (forget race).
+            if not self._is_retired(session):
+                self.histories[session] = recent
+                self.histories.move_to_end(session)
+                while len(self.histories) > 32:
+                    self.histories.popitem(last=False)
+            return result if with_intent else reply
+        finally:
+            self.lock.release()
+
+    def _retire(self, session):
+        with self.retire_lock:
+            self.retired[session] = True
+            self.retired.move_to_end(session)
+            while len(self.retired) > 128:
+                self.retired.popitem(last=False)
+
+    def _is_retired(self, session):
+        with self.retire_lock:
+            return session in self.retired
+
+    @staticmethod
+    def _terminal_fact(event):
+        progress = event["progress"]
+        field = "item" if event["type"] == "collect_drop" else "block"
+        parts = ["種別=%s" % event["type"], "対象=%s" % event["target"][field],
+                 "状態=%s" % event["status"], "理由=%s" % event["reason"]]
+        if event["type"] == "mine":
+            parts.append("採掘=%d/%d" % (progress["mined"], progress["requested"]))
+        elif event["type"] == "collect_drop":
+            parts.append("回収=%d/%d" % (progress["acquired"], progress["requested"]))
+        else:
+            parts.append("回収=%d/%d" % (progress["acquired"], progress["requested"]))
+            parts.append("採掘=%d" % progress["mined"])
+        if not progress["complete"]:
+            parts.append("未確定あり")
+        return " ".join(parts)
+
+    def register_terminal(self, session, event, say):
+        """Records a *displayed* terminal line as a user/assistant history pair, exactly once.
+
+        Called only from a delivered ACK. Same conversation identity/lock/trim as normal chat. A
+        retired conversation refuses registration so a forget cannot be undone by a late ACK.
+        """
+        if event is None or say is None:
+            raise SocialError("invalid_terminal_history")
+        if self._is_retired(session):
+            raise SocialError("conversation_retired")
+        if not self.lock.acquire(timeout=2):
+            raise SocialError("busy")
+        try:
+            if self._is_retired(session):
+                raise SocialError("conversation_retired")
+            history = self.histories.get(session, [])
+            user = {"role": "user", "content": "[内部イベント skill_terminal] " + self._terminal_fact(event)}
+            assistant = {"role": "assistant", "content": validate_reply(say)}
+            recent = self.budget.trim_history(history + [user, assistant])
             self.histories[session] = recent
             self.histories.move_to_end(session)
             while len(self.histories) > 32:
                 self.histories.popitem(last=False)
-            return result if with_intent else reply
         finally:
             self.lock.release()
 
@@ -277,6 +343,8 @@ class SocialBrain:
         conversation history (that happens only on a real delivery ACK). Raises SocialError to fall
         back to the fixed renderer."""
         from terminal_presentation import render_candidates
+        if self._is_retired(session):
+            raise SocialError("conversation_retired")
         if not self.lock.acquire(blocking=False):
             raise SocialError("busy")
         try:
@@ -304,6 +372,9 @@ class SocialBrain:
             self.lock.release()
 
     def forget(self, session):
+        # Retire first, even if the history delete is busy: a late chat/terminal commit must not
+        # recreate a conversation the user asked to forget.
+        self._retire(session)
         if not self.lock.acquire(blocking=False):
             raise SocialError("busy")
         try:

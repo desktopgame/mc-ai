@@ -648,8 +648,7 @@ public final class ActionBridge {
                     for (SkillProtocol.TerminalEvent event : SkillProtocol.terminalEvents(done.response)) {
                         if (!event.daemonEpoch.equals(terminalEpoch) || !event.session.equals(state.session)) { continue; }
                         if (deliveries.accept(event.identity(), event.renderFallback(), now, TERMINAL_WINDOW_NANOS)) {
-                            String text = deliveries.finishFallback(event.identity());
-                            if (text != null) { deliverTerminal(event.identity(), text); }
+                            deliverTerminal(event);
                         }
                         terminalPoll.observe(event.eventSequence);
                     }
@@ -658,17 +657,19 @@ public final class ActionBridge {
                 }
             }
         }
-        for (String identity : deliveries.expired(now)) {
-            String text = deliveries.finishFallback(identity);
-            if (text != null) { deliverTerminal(identity, text); }
-        }
         if (!terminalInFlight && terminalPoll.due(now)) { startTerminalFetch(); }
     }
 
-    /** Routes a terminal fallback through the shared conversation queue so it orders with chat. */
-    private void deliverTerminal(String identity, String text) {
-        if (ping != null && owner != null) { ping.enqueueTerminal(owner, identity, text); }
-        else { reply(text); }
+    /** Hands a finalized terminal to the shared conversation queue for present/display/ACK. */
+    private void deliverTerminal(SkillProtocol.TerminalEvent event) {
+        String fallback = event.renderFallback();
+        if (ping == null || owner == null) { reply(fallback); return; }
+        List<String[]> candidates = TerminalPresentation.renderCandidates(event.type, event.target, event.status,
+                event.reason, event.requested, event.acquired, event.mined, event.complete);
+        java.util.List<String> says = new java.util.ArrayList<String>();
+        for (String[] candidate : candidates) { says.add(candidate[1]); }
+        ping.enqueueTerminal(owner, new PingBridge.TerminalRequest(event.daemonEpoch, state.session,
+                event.skillInstanceId, event.terminalId, fallback, says, java.util.UUID.randomUUID().toString()));
     }
 
     /** Set once the PingBridge exists, so terminal notifications share its conversation queue. */

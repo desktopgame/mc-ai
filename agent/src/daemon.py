@@ -195,9 +195,20 @@ class Handler(BaseHTTPRequestHandler):
                         raise SkillSyncError("skills_not_configured")
                     if delivery["daemonEpoch"] != self.server.registry.epoch:
                         raise SkillSyncError("daemon_restarted")
-                    store.deliver(delivery["daemonEpoch"], delivery["session"], delivery["skillInstanceId"],
-                                  delivery["terminalId"], delivery["conversationSession"], delivery["player"],
-                                  delivery["deliveryId"], delivery["outcome"], delivery["variantId"])
+                    applied = store.deliver(delivery["daemonEpoch"], delivery["session"], delivery["skillInstanceId"],
+                                            delivery["terminalId"], delivery["conversationSession"], delivery["player"],
+                                            delivery["deliveryId"], delivery["outcome"], delivery["variantId"])
+                    if (applied["first"] and delivery["outcome"] == "displayed"
+                            and applied.get("say") and applied.get("event")):
+                        brain = getattr(self.server, "brain", None)
+                        if brain is not None:
+                            try:
+                                # History is written only here, after a real displayed acknowledgement,
+                                # under the same conversation identity/lock as normal chat.
+                                brain.register_terminal((delivery["conversationSession"], delivery["player"]),
+                                                        applied["event"], applied["say"])
+                            except (SocialError, BudgetExceeded) as exc:
+                                LOG.info("terminal history registration skipped=%s", type(exc).__name__)
                     response = {"version": 2, "daemonEpoch": delivery["daemonEpoch"], "session": delivery["session"],
                                 "skillInstanceId": delivery["skillInstanceId"], "terminalId": delivery["terminalId"],
                                 "deliveryId": delivery["deliveryId"], "accepted": True}

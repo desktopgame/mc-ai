@@ -459,6 +459,59 @@ class HttpTests(unittest.TestCase):
         self.assertEqual((status, said["mode"], said["variantId"]), (200, "fallback", "fallback"))
         self.assertEqual(said["say"], render_fallback(snap))
 
+    def test_displayed_ack_registers_history_once(self):
+        brain = SocialBrain(_StubProvider(variant="friendly"))
+        self.server.brain = brain
+        snap = {k: event(skill_id="s-3", terminal_id="t-3", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-3",
+                   "terminalId": "t-3", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-3"}
+        self.post("/v2/social/skill-terminal", present)
+        ack = dict(present, outcome="displayed", variantId="friendly")
+        self.assertEqual(self.post("/v2/social/terminal-delivery", ack)[1]["accepted"], True)
+        key = ("conv", "Steve")
+        self.assertEqual(len(brain.histories.get(key, [])), 2)
+        self.assertIn("skill_terminal", brain.histories[key][0]["content"])
+        self.post("/v2/social/terminal-delivery", ack)   # duplicate ACK: no second pair
+        self.assertEqual(len(brain.histories.get(key, [])), 2)
+
+    def test_suppressed_ack_adds_no_history(self):
+        brain = SocialBrain(_StubProvider(variant="friendly"))
+        self.server.brain = brain
+        snap = {k: event(skill_id="s-4", terminal_id="t-4", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-4",
+                   "terminalId": "t-4", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-4"}
+        self.post("/v2/social/skill-terminal", present)
+        self.post("/v2/social/terminal-delivery", dict(present, outcome="suppressed"))
+        self.assertEqual(brain.histories.get(("conv", "Steve"), []), [])
+
+    def test_ack_variant_must_match_the_presentation(self):
+        brain = SocialBrain(_StubProvider(variant="friendly"))
+        self.server.brain = brain
+        snap = {k: event(skill_id="s-5", terminal_id="t-5", epoch=self.epoch)[k] for k in event() if k != "eventSequence"}
+        self.store.record(snap)
+        present = {"version": 2, "daemonEpoch": self.epoch, "session": "world", "skillInstanceId": "s-5",
+                   "terminalId": "t-5", "conversationSession": "conv", "player": "Steve", "deliveryId": "d-5"}
+        self.post("/v2/social/skill-terminal", present)   # ready as "friendly"
+        self.assertEqual(self.post("/v2/social/terminal-delivery",
+                                   dict(present, outcome="displayed", variantId="fallback"))[0], 409)
+        self.assertEqual(brain.histories.get(("conv", "Steve"), []), [])
+
+    def test_forget_retires_conversation_for_history(self):
+        brain = SocialBrain(_StubProvider(variant="calm"))
+        key = ("conv", "Steve")
+        brain.chat(key, "こんにちは")
+        brain.forget(key)
+        self.assertIsNone(brain.histories.get(key))
+        facts = {k: event()[k] for k in ("type", "target", "status", "reason", "progress")}
+        with self.assertRaises(SocialError):
+            brain.register_terminal(key, facts, "say")
+        with self.assertRaises(SocialError):
+            brain.present_terminal(key, facts)
+        brain.chat(key, "あとで")   # a late chat commit must not recreate the retired conversation
+        self.assertNotIn(key, brain.histories)
+
 
 if __name__ == "__main__":
     unittest.main()

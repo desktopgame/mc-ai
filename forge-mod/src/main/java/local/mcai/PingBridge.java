@@ -8,9 +8,11 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraftforge.event.ServerChatEvent;
 import org.apache.logging.log4j.LogManager;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** Social work has its own bounded queue, shared by user chat and Skill-terminal notifications. */
@@ -23,52 +25,98 @@ public final class PingBridge {
     private MinecraftServer server;
     private EntityPlayerMP owner;
     private String session = UUID.randomUUID().toString(), forgetSession;
+    private long conversationEpoch;
     private volatile boolean inFlight;
     private volatile Completion completion;
-    // Terminal identities already handed to this conversation; terminal delivery itself is at-most-once.
+    private volatile TerminalDone terminalDone;
+    private final Map<String, TerminalRequest> terminalRequests = new HashMap<String, TerminalRequest>();
     private final LinkedHashSet<String> seenTerminals = new LinkedHashSet<String>();
     private static final int MAX_SEEN_TERMINALS = 256;
-    /** A queued terminal waiting this long is displayed out of FIFO so a long chat cannot starve it. */
     private static final long TERMINAL_FALLBACK_NANOS = 12000000000L;
+
+    /** A terminal notification waiting to be presented, displayed and acknowledged. */
+    public static final class TerminalRequest {
+        public final String daemonEpoch, execSession, skillInstanceId, terminalId, fallback, deliveryId;
+        public final List<String> candidateSays;
+        String conversationSession, player;
+        public TerminalRequest(String daemonEpoch, String execSession, String skillInstanceId, String terminalId,
+                               String fallback, List<String> candidateSays, String deliveryId) {
+            this.daemonEpoch = daemonEpoch; this.execSession = execSession; this.skillInstanceId = skillInstanceId;
+            this.terminalId = terminalId; this.fallback = fallback; this.candidateSays = candidateSays;
+            this.deliveryId = deliveryId;
+        }
+    }
     private static final class Completion {
         final ConversationQueue.Turn turn; final PingClient.Reply reply; final long received = System.nanoTime();
         Completion(ConversationQueue.Turn turn, PingClient.Reply reply) { this.turn = turn; this.reply = reply; }
+    }
+    private static final class TerminalDone {
+        final long epoch; final String identity, say;
+        TerminalDone(long epoch, String identity, String say) { this.epoch = epoch; this.identity = identity; this.say = say; }
     }
     public PingBridge(String url, ActionBridge actions, IoExecutors io, boolean verbose) {
         client = new PingClient(url); this.actions = actions; this.io = io; this.verbose = verbose;
     }
     private void reset(EntityPlayerMP player) {
-        queue.reset(); session = UUID.randomUUID().toString(); owner = player; seenTerminals.clear();
+        queue.reset(); session = UUID.randomUUID().toString(); owner = player;
+        seenTerminals.clear(); conversationEpoch++;
+        for (TerminalRequest request : terminalRequests.values()) { ackAsync(request, "suppressed", null); }
+        terminalRequests.clear();
     }
     private void ensureContext(EntityPlayerMP player) {
         if (server != MinecraftServer.getServer() || owner != player) { server = MinecraftServer.getServer(); reset(player); }
     }
     private void reply(String text) { if (owner != null) { owner.addChatMessage(new ChatComponentText("[Companion] " + text)); } }
-    /** Internal lifecycle chatter; the on-screen icon covers this by default. */
     private void debugReply(String text) { if (verbose) { reply(text); } }
-    /** Social turn in flight, read cross-thread by the HUD icon. */
     public boolean thinking() { return inFlight; }
 
     /**
-     * Hands a finalized terminal fallback to the shared conversation queue. Initializes the chat
-     * context if the Skill was started without a prior chat. Duplicate identities and a full terminal
-     * slot degrade to an immediate one-time display, never a second queue entry.
+     * Hands a finalized terminal fallback to the shared conversation queue. The queue's SOCIAL worker
+     * asks the Daemon to choose a variant, re-checks the text is one of our own candidates, displays
+     * it, then sends the displayed ACK. Duplicate identities and a full terminal slot degrade to an
+     * immediate one-time fallback display plus a best-effort ACK, never a second queue entry.
      */
-    public boolean enqueueTerminal(EntityPlayerMP player, String identity, String say) {
-        if (identity == null || say == null) { return false; }
+    public boolean enqueueTerminal(EntityPlayerMP player, TerminalRequest request) {
+        if (request == null) { return false; }
         ensureContext(player);
         if (owner == null) { return false; }
-        if (!seenTerminals.add(identity)) { return false; }
+        request.player = owner.getCommandSenderName();
+        request.conversationSession = session;
+        if (!seenTerminals.add(request.terminalId)) { return false; }
         while (seenTerminals.size() > MAX_SEEN_TERMINALS) {
             Iterator<String> iterator = seenTerminals.iterator(); iterator.next(); iterator.remove();
         }
-        if (!queue.offerTerminal(identity, say, System.nanoTime())) { reply(say); }
+        terminalRequests.put(request.terminalId, request);
+        if (!queue.offerTerminal(request.terminalId, request.fallback, System.nanoTime())) {
+            reply(request.fallback);
+            terminalRequests.remove(request.terminalId);
+            ackAsync(request, "displayed", "fallback");
+        }
         return true;
+    }
+
+    private void ackAsync(final TerminalRequest request, final String outcome, final String variantId) {
+        if (request == null) { return; }
+        io.execute(IoExecutors.Lane.SOCIAL, new Runnable() {
+            @Override public void run() {
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        if (client.deliverTerminal(request.player, request.conversationSession, request.deliveryId,
+                                request.daemonEpoch, request.execSession, request.skillInstanceId, request.terminalId,
+                                outcome, variantId)) { return; }
+                    } catch (Exception e) { /* best effort; never roll back the display */ }
+                }
+                LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal delivery ACK failed outcome={}", outcome);
+            }
+        });
     }
 
     private void displayPendingTerminals() {
         for (ConversationQueue.Turn turn : queue.snapshot()) {
-            if (turn.kind == ConversationQueue.Kind.SKILL_TERMINAL) { reply(turn.text); }
+            if (turn.kind == ConversationQueue.Kind.SKILL_TERMINAL) {
+                reply(turn.text);
+                ackAsync(terminalRequests.remove(turn.identity), "displayed", "fallback");
+            }
         }
     }
 
@@ -77,8 +125,49 @@ public final class PingBridge {
             if (turn.kind == ConversationQueue.Kind.SKILL_TERMINAL && now - turn.enqueuedAt >= TERMINAL_FALLBACK_NANOS) {
                 queue.remove(turn);
                 if (queue.current(turn)) { reply(turn.text); }
+                ackAsync(terminalRequests.remove(turn.identity), "displayed", "fallback");
             }
         }
+    }
+
+    private void processTerminal(final ConversationQueue.Turn turn) {
+        final TerminalRequest request = terminalRequests.get(turn.identity);
+        if (request == null) { reply(turn.text); return; }
+        final long epoch = conversationEpoch;
+        inFlight = true;
+        boolean accepted = io.execute(IoExecutors.Lane.SOCIAL, new Runnable() {
+            @Override public void run() {
+                String say = request.fallback, variantId = "fallback";
+                try {
+                    PingClient.Presentation presentation = client.presentTerminal(request.player,
+                            request.conversationSession, request.deliveryId, request.daemonEpoch,
+                            request.execSession, request.skillInstanceId, request.terminalId);
+                    // Fact invariance: only accept a social variant that matches one of our own candidates.
+                    if (presentation.mode.equals("social") && request.candidateSays.contains(presentation.say)) {
+                        say = presentation.say; variantId = presentation.variantId;
+                    }
+                } catch (Exception e) {
+                    LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal presentation fallback ({})", e.getClass().getSimpleName());
+                }
+                ackAsyncInline(request, "displayed", variantId);
+                terminalDone = new TerminalDone(epoch, turn.identity, say);
+            }
+        });
+        if (!accepted) {
+            inFlight = false; reply(request.fallback); terminalRequests.remove(turn.identity);
+            ackAsync(request, "displayed", "fallback");
+        }
+    }
+
+    private void ackAsyncInline(TerminalRequest request, String outcome, String variantId) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                if (client.deliverTerminal(request.player, request.conversationSession, request.deliveryId,
+                        request.daemonEpoch, request.execSession, request.skillInstanceId, request.terminalId,
+                        outcome, variantId)) { return; }
+            } catch (Exception e) { /* best effort */ }
+        }
+        LogManager.getLogger(CompanionMod.MOD_ID).warn("Terminal delivery ACK failed outcome={}", outcome);
     }
 
     @SubscribeEvent public void onChat(ServerChatEvent event) {
@@ -87,7 +176,6 @@ public final class PingBridge {
         event.setCanceled(true);
         ensureContext(event.player);
         if (message.equals("!agent forget")) {
-            // Pending terminal fallbacks belong to the old conversation: show them once, then discard.
             displayPendingTerminals();
             forgetSession = session; reset(event.player);
             reply("会話をリセットしました。待機中の発言と古い返答も取り消しました。");
@@ -114,8 +202,12 @@ public final class PingBridge {
                 else if (actions.acceptIntent(owner, done.turn.intentTicket, done.reply.intent)) { reply(done.reply.say); }
             }
         }
-        // Terminal timeout exception runs even while a chat is generating, so an old Skill's result
-        // is not starved by a long conversation. Terminal notifications never use the Social worker.
+        TerminalDone finished = terminalDone;
+        if (finished != null) {
+            terminalDone = null; inFlight = false;
+            if (finished.epoch == conversationEpoch && owner != null) { reply(finished.say); }
+            terminalRequests.remove(finished.identity);
+        }
         if (owner != null) { showExpiredTerminals(System.nanoTime()); }
         if (inFlight || owner == null) { return; }
         ConversationQueue.Turn next = queue.poll();
@@ -123,10 +215,10 @@ public final class PingBridge {
         if (next == null && cleanup == null) { return; }
         forgetSession = null;
         if (next != null && next.kind == ConversationQueue.Kind.SKILL_TERMINAL) {
-            if (queue.current(next)) { reply(next.text); }
+            if (queue.current(next)) { processTerminal(next); }
             return;
         }
-        final ConversationQueue.Turn turn = next;   // user chat, or null for a cleanup-only tick
+        final ConversationQueue.Turn turn = next;
         final String conversation = session, player = owner.getCommandSenderName();
         inFlight = true;
         boolean accepted = io.execute(IoExecutors.Lane.SOCIAL, new Runnable() {

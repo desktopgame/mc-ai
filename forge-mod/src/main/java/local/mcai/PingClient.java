@@ -100,4 +100,79 @@ public final class PingClient {
             return new Reply(say, intent);
         } catch (RuntimeException e) { throw new IOException("Malformed social intent", e); }
     }
+
+    /** A chosen terminal presentation. `mode` is social or fallback; `say` is the fact-complete text. */
+    public static final class Presentation {
+        public final String say, variantId, mode;
+        Presentation(String say, String variantId, String mode) { this.say = say; this.variantId = variantId; this.mode = mode; }
+    }
+
+    /** Bounded notification call: the Daemon picks a variant; the Forge re-checks the text. Max ~9s. */
+    public Presentation presentTerminal(String player, String conversationSession, String deliveryId,
+                                        String daemonEpoch, String executionSession, String skillInstanceId,
+                                        String terminalId) throws IOException {
+        JsonObject body = binding(conversationSession, player, deliveryId, daemonEpoch, executionSession,
+                                  skillInstanceId, terminalId);
+        JsonObject o = postJson("/v2/social/skill-terminal", body, 2000, 9000);
+        try {
+            String say = ActionProtocol.string(o, "say");
+            String variantId = ActionProtocol.string(o, "variantId");
+            String mode = ActionProtocol.string(o, "mode");
+            if (say.length() > 512 || !(mode.equals("social") || mode.equals("fallback"))) {
+                throw new IOException("Invalid presentation");
+            }
+            return new Presentation(say, variantId, mode);
+        } catch (RuntimeException e) { throw new IOException("Malformed presentation", e); }
+    }
+
+    /** Short-deadline ACK; returns true only on an accepted acknowledgement. */
+    public boolean deliverTerminal(String player, String conversationSession, String deliveryId,
+                                   String daemonEpoch, String executionSession, String skillInstanceId,
+                                   String terminalId, String outcome, String variantId) throws IOException {
+        JsonObject body = binding(conversationSession, player, deliveryId, daemonEpoch, executionSession,
+                                  skillInstanceId, terminalId);
+        body.addProperty("outcome", outcome);
+        if (variantId != null) { body.addProperty("variantId", variantId); }
+        JsonObject o = postJson("/v2/social/terminal-delivery", body, 2000, 3000);
+        return o.has("accepted") && o.get("accepted").isJsonPrimitive() && o.get("accepted").getAsBoolean();
+    }
+
+    private JsonObject binding(String conversationSession, String player, String deliveryId, String daemonEpoch,
+                               String executionSession, String skillInstanceId, String terminalId) {
+        JsonObject body = new JsonObject();
+        body.addProperty("version", 2); body.addProperty("daemonEpoch", daemonEpoch);
+        body.addProperty("session", executionSession); body.addProperty("skillInstanceId", skillInstanceId);
+        body.addProperty("terminalId", terminalId); body.addProperty("conversationSession", conversationSession);
+        body.addProperty("player", player); body.addProperty("deliveryId", deliveryId);
+        return body;
+    }
+
+    private JsonObject postJson(String path, JsonObject body, int connectMs, int readMs) throws IOException {
+        URL url = new URL(baseUrl.replaceAll("/+$", "") + path);
+        if (!(url.getProtocol().equals("http") || url.getProtocol().equals("https"))
+                || url.getUserInfo() != null || url.getQuery() != null || url.getRef() != null) {
+            throw new IOException("Invalid daemon URL");
+        }
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setConnectTimeout(connectMs); connection.setReadTimeout(readMs);
+        connection.setInstanceFollowRedirects(false);
+        connection.setRequestMethod("POST");
+        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        connection.setDoOutput(true);
+        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+        if (payload.length > 8192) { throw new IOException("Request too large"); }
+        connection.setFixedLengthStreamingMode(payload.length);
+        try {
+            try (OutputStream out = connection.getOutputStream()) { out.write(payload); }
+            if (connection.getResponseCode() != 200) { throw new IOException("Daemon HTTP status " + connection.getResponseCode()); }
+            try (InputStream in = connection.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[1024]; int count;
+                while ((count = in.read(buffer)) != -1) {
+                    if (out.size() + count > 8192) { throw new IOException("Response too large"); }
+                    out.write(buffer, 0, count);
+                }
+                return new JsonParser().parse(new String(out.toByteArray(), StandardCharsets.UTF_8)).getAsJsonObject();
+            }
+        } finally { connection.disconnect(); }
+    }
 }

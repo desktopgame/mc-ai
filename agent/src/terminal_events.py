@@ -206,10 +206,13 @@ class TerminalEventStore:
 
     def deliver(self, epoch, session, skillInstanceId, terminalId, conversationSession, player,
                 deliveryId, outcome, variant_id):
+        """Applies an ACK. Returns {"first", "say", "variantId", "mode", "event"}: `first` is True only
+        for the transition into delivered/suppressed, so the caller registers history exactly once."""
         identity = (epoch, session, skillInstanceId, terminalId)
         binding = (conversationSession, player, deliveryId)
         with self.lock:
             entry = self.presentations.get(identity)
+            event = self.by_session.get((epoch, session), {}).get(identity)
             if entry is None:
                 closed = self.closed.get(identity)
                 if closed is None:
@@ -218,21 +221,28 @@ class TerminalEventStore:
                     raise TerminalError("binding_conflict")
                 if closed["state"] in ("delivered", "suppressed"):
                     if closed["ack"] == (outcome, variant_id):
-                        return   # idempotent duplicate ACK
+                        return {"first": False, "say": None, "variantId": variant_id, "mode": "fallback", "event": None}
                     raise TerminalError("ack_conflict")
-                # An evicted/expired entry: accept this ACK as the close.
                 closed["state"] = "delivered" if outcome == "displayed" else "suppressed"
                 closed["ack"] = (outcome, variant_id)
-                return
+                return {"first": True, "say": None, "variantId": variant_id, "mode": "fallback", "event": None}
             if entry["binding"] != binding:
                 raise TerminalError("binding_conflict")
             if entry["state"] in ("delivered", "suppressed"):
                 if entry["ack"] == (outcome, variant_id):
-                    return
+                    return {"first": False, "say": entry["say"], "variantId": entry["variantId"],
+                            "mode": entry["mode"], "event": None}
                 raise TerminalError("ack_conflict")
+            # A displayed ACK must name the presentation that was actually offered, so a client cannot
+            # swap in a different wording (or a social variant after a fallback was committed).
+            if outcome == "displayed" and entry["variantId"] is not None and variant_id != entry["variantId"]:
+                raise TerminalError("ack_conflict")
+            result = {"first": True, "say": entry["say"], "variantId": entry["variantId"], "mode": entry["mode"],
+                      "event": copy.deepcopy(event) if event is not None else None}
             entry["state"] = "delivered" if outcome == "displayed" else "suppressed"
             entry["ack"] = (outcome, variant_id)
             self._close_entry(identity, entry)
+            return result
 
     def _close_entry(self, identity, entry):
         # Move to the bounded closed ledger (dropping the heavy say) and close the outbox, so an
