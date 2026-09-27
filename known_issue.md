@@ -57,8 +57,9 @@ Companion MODの問題、音声環境の問題、同時起動の影響のいず�
 ## KI-07 Gameplay異常系の実機確認が不足
 
 状態: 検証不足。
-収納満杯（inventory_full / owner_inventory_full）、pickup/deposit中のpath_not_found、道具不足・壁への回り込み・leaves越しの採掘、pause/退出・長時間動作の組み合わせに未消化がある。
-基本のcollect_drop・mine・collect_blockやガラス越しblockedの確認を、これらの確認済みの根拠にしない。再現条件・入力・結果・ログを記録して項目ごとに閉じる。
+収納満杯（inventory_full / owner_inventory_full）、道具不足・leaves越しの採掘、pause/退出・長時間動作の組み合わせに未消化がある。
+基本のcollect_drop・mine・collect_blockの確認を、これらの確認済みの根拠にしない。再現条件・入力・結果・ログを記録して項目ごとに閉じる。
+pickup系path_not_foundと壁への回り込みは、実機再現ありの不具合としてKI-11・KI-12へ切り出した。
 
 ## KI-08 終端発話の自然さは限定的
 
@@ -77,6 +78,26 @@ LLMはfriendly/calm/conciseの候補を選ぶだけで、自由文を生成し�
 状態: v0.1.0準備時に1回観測／原因未確定。
 Python全155件の初回実行で `test_wrong_route_and_content_type` が期待するHTTP 415を受信できず、Windowsの `ConnectionAbortedError (10053)` で失敗した。
 これは今回の確認で観測した事実であり、ゲームの症状と同一原因とは判断しない。再実行結果は [リリース記録](RELEASE_NOTES.md) を参照。テスト用HTTP接続・不正Content-Typeの処理・実行環境を切り分ける必要がある。
+
+## KI-11 破壊済みブロックのdropが目線より高い位置にあると回収できず停止する
+
+状態: 実機再現あり／原因未確定。優先度P2。
+2026-09-27、collect_block(minecraft:log)の実機確認中に観測。対象ブロックの破壊自体は成功するが、生成したdropアイテムがCompanionの目線より高い位置にあり、
+本来ジャンプすれば届く距離でもCompanionがその場で停止し、拾得（`CompanionEntity.PickupTargetTask`）が進行しなくなる。
+`PickupTargetTask.updateTask`は`getDistanceSqToEntity(item) <= 2.25D`への到達と`getNavigator().tryMoveToEntityLiving(item, 1.0D)`の経路探索だけに依存しており、
+Y方向の到達（ジャンプ）を明示的に補助する処理はない。1.7.10標準のPathNavigateGroundの自動ジャンプで解決できない配置（段差・足場の上のitem等）だと、
+`FollowRetry`（連続3回で`path_not_found`）が尽きるまで待つか、見た目上停止し続ける可能性がある。
+KI-07で未検証としていたpickup系path_not_foundの一部が実機再現ありの不具合として確定した。再現条件（段差の高さ・item位置）の記録とログ採取が必要。
+
+## KI-12 到達可能な対象でも遮蔽物を回り込めず停止する
+
+状態: 実機再現あり／原因未確定。優先度P2。
+2026-09-27、collect_block(minecraft:log)の実機確認中に観測。ブロックなど明らかに回り込んで到達できる遮蔽物があっても、Companionが手前で停止し目的の場所まで移動しない。
+mineの到達判定`MineObstruction.accessible`（`MineObstruction.java`）はCompanionの現在の目線位置から対象ブロック中心への直線1本だけを判定するMVP実装で、
+遮蔽されていれば移動やジャンプでの回り込みを試さずその場で`blocked`として終了する（実装コメントに「MVP reachability」と明記済み）。
+また`MineTargetTask`の経路探索は`FollowRetry`により連続3回の`tryMoveToXYZ`失敗で`path_not_found`として打ち切るため、
+1.7.10標準ナビゲータが遠回りルートを見つけられない・見つけるまでに3回を超える場合も同様の症状になり得る。
+KI-07で「壁への回り込み」として未検証としていた項目が実機再現ありの不具合として確定した。直線LoS判定の緩和（複数候補位置からの再判定、ジャンプ込みの再接近）または経路探索の拡張が対処候補。
 
 ## 今回の区切りで未対応の機能
 
