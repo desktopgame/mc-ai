@@ -99,6 +99,13 @@ mineの到達判定`MineObstruction.accessible`（`MineObstruction.java`）はCo
 1.7.10標準ナビゲータが遠回りルートを見つけられない・見つけるまでに3回を超える場合も同様の症状になり得る。
 KI-07で「壁への回り込み」として未検証としていた項目が実機再現ありの不具合として確定した。直線LoS判定の緩和（複数候補位置からの再判定、ジャンプ込みの再接近）または経路探索の拡張が対処候補。
 
+## KI-13 見えるが、壊せるとは限らない
+
+状態：実機再現あり／未実装
+ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。
+すると近くまで接近するが、破壊が行われない。
+「mine_target が採掘可能な stand position を探索しない」というより一般的な問題？
+
 ## 今回の区切りで未対応の機能
 
 採掘時の道具耐久値消費・詳細metadata対応、attack / place / craft / smelt、JEV・Planner、collect_block(minecraft:log)以外の自然文からの引数付きSkill選択（collect_dropや他ブロックのcollect_block、mine等）、長期記憶、全世界探索、マルチプレイヤー、cloud routing。これらは既存機能の不具合とは区別する。
