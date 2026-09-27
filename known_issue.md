@@ -3,13 +3,14 @@
 2026-09-26。実装基点 `ed1ca65`。v0.1.0は以下を残して区切る。
 不具合、設計上の上限、実機検証不足を分ける。過去レビューの指摘をそのまま未修正とは扱わない。
 
-## KI-01 Forge終端通知のidentity管理が統一されていない
+## KI-01 Forge終端通知のidentity管理が統一されていない（解消済み）
 
-状態: 設計上の制限／コード確認。優先度P2。
+状態: 解消済み。優先度P2だった。
 Daemonのidentityは `(daemonEpoch, session, skillInstanceId, terminalId)`。
-ActionBridgeは完全identityを使用するが、PingBridgeの `seenTerminals` / `terminalRequests` / 配送台帳はterminalId単体を使用している。
-会話resetでseenTerminalsを消す一方、配送台帳のclosed状態は残る。同じterminalIdを別bindingで再利用すると通知を拒否する可能性がある。
-通常はUUIDを使うため再現しにくいが、厳密なbinding分離を保証しない。両bridgeの管理キーとreset範囲を統一し、別session・epochで同IDのテストを追加する。
+ActionBridgeは完全identityを使用していたが、PingBridgeの `seenTerminals` / `terminalRequests` / 配送台帳はterminalId単体を使用しており、同じterminalIdを別bindingで再利用すると通知を拒否する可能性があった。
+`PingBridge.TerminalRequest` に `identity`（`daemonEpoch|execSession|skillInstanceId|terminalId`、`TerminalDeliveryState.identity` / `SkillProtocol.TerminalEvent.identity()` と同一の式・入力）を追加し、`seenTerminals` / `terminalRequests` / `deliveries.accept` / `queue.offerTerminal` を全てこの複合キーに統一した。Daemonへのワイヤープロトコル呼び出し（`deliverTerminal` / `presentTerminal`）は元々terminalId単体を送る仕様のため変更していない。
+`TerminalSocialTest#terminalRequestIdentityMatchesActionBridgeBinding` で、同一terminalIdでもdaemonEpoch/execSession/skillInstanceIdが異なれば別identityになることを確認済み（`.\scripts\forge.ps1 test --offline` でBUILD SUCCESSFUL）。
+reset時に配送台帳のclosed状態が残る挙動自体はActionBridge側と同じ設計として維持（同一identityの再表示を永続的に防ぐ意図）であり、今回の不統一の原因ではないため変更していない。
 
 ## KI-02 ACKと会話履歴の配送保証は有界・best effort
 

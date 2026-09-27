@@ -10,7 +10,7 @@
 
 - snapshot/outbox、既存providerによる3候補選択、共有会話queue、固定fallback、実表示ACKと履歴登録を実装。
 - presentなし/生成中fallback ACK、有界pending ACK、in-flightを含む12秒表示期限、forget時の固定表示、独立cleanupへ修正。
-- Forgeのbindingキーは完全identityへ統一されていない（KI-01）。
+- Forgeのbindingキーは完全identityへ統一済み（KI-01、解消済み）。
 - ACK上限32件と最大2回の送信失敗、履歴lock競合により登録欠落があり得る（KI-02）。
 - epoch変更時の旧作業表示は専用経路未実装（KI-03）。
 - 台帳はexact/digestの有限LRUで、§6.4の連続sequence＋gap方式は未実装。session辞書の長期有界性、overflow表示、HTTP総時間上限にも差分がある（KI-04）。
