@@ -54,8 +54,9 @@ def turn(payload, brain=None):
     else:
         if payload.get("acceptIntent", False):
             result = brain.chat((session, player), message, with_intent=True)
-            LOG.info("social intent=%s", result["intent"])
-            return {"version": 1, "say": result["reply"], "intent": result["intent"], "actions": []}
+            LOG.info("social intent=%s count=%s", result["intent"], result["count"])
+            return {"version": 1, "say": result["reply"], "intent": result["intent"],
+                    "count": result["count"], "actions": []}
         reply = brain.chat((session, player), message)
     return {"version": 1, "say": reply, "actions": []}
 

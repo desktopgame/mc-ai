@@ -20,7 +20,9 @@ public final class PingClient {
 
     public static final class Reply {
         public final String say, intent;
-        Reply(String say, String intent) { this.say = say; this.intent = intent; }
+        public final Integer count;
+        Reply(String say, String intent) { this(say, intent, null); }
+        Reply(String say, String intent, Integer count) { this.say = say; this.intent = intent; this.count = count; }
     }
 
     public Reply socialTurn(String player, String text, String session) throws IOException {
@@ -87,18 +89,42 @@ public final class PingClient {
         }
     }
 
+    /** Intents that also carry a count; the Skill's target is otherwise fixed (minecraft:log only). */
+    private static final java.util.Set<String> INTENTS_WITH_COUNT =
+            java.util.Collections.singleton("collect_block_log");
+
     static Reply parseSocialReply(String text) throws IOException {
         String say = parseReply(text);
         try {
             JsonObject o = new JsonParser().parse(text).getAsJsonObject();
-            if (o.entrySet().size() != 4) { throw new IOException("Unexpected social fields"); }
+            if (o.entrySet().size() != 5) { throw new IOException("Unexpected social fields"); }
             String intent = ActionProtocol.string(o, "intent");
             if (!(intent.equals("none") || intent.equals("follow_owner") || intent.equals("stop")
-                    || intent.equals("look_at_owner") || intent.equals("pickup_item") || intent.equals("deposit_items"))) {
+                    || intent.equals("look_at_owner") || intent.equals("pickup_item") || intent.equals("deposit_items")
+                    || INTENTS_WITH_COUNT.contains(intent))) {
                 throw new IOException("Unsupported intent");
             }
-            return new Reply(say, intent);
+            Integer count = parseNullableCount(o);
+            if (INTENTS_WITH_COUNT.contains(intent)) {
+                if (count == null || count < 1 || count > 64) { throw new IOException("Invalid count for " + intent); }
+            } else if (count != null) {
+                throw new IOException("Unexpected count for intent " + intent);
+            }
+            return new Reply(say, intent, count);
         } catch (RuntimeException e) { throw new IOException("Malformed social intent", e); }
+    }
+
+    /** `count` must be present and either JSON null or an exact integer; anything else is malformed. */
+    private static Integer parseNullableCount(JsonObject o) {
+        JsonElement element = o.get("count");
+        if (element == null || element.isJsonNull()) { return null; }
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("count must be an integer or null");
+        }
+        double value = element.getAsDouble();
+        int rounded = (int) value;
+        if (rounded != value) { throw new IllegalArgumentException("count must be an integer"); }
+        return rounded;
     }
 
     /** A chosen terminal presentation. `mode` is social or fallback; `say` is the fact-complete text. */

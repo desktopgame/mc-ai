@@ -9,8 +9,8 @@ Minecraft Forge側でゲーム操作を実行し、PythonのAgent Daemonで会�
 | --- | --- |
 | Companion | 出現、追従、停止、注視、発話、状態確認、所持品保存 |
 | ローカル会話 | `!agent chat こんにちは`、直近会話の記憶、`!agent forget` |
-| 会話からの簡単な指示 | 追従・停止・注視・近くの落下物の拾得・所持品全体の受け渡し |
-| 型付きSkill | collect_drop、mine、collect_block。引数付きSkillの自然文選択は未対応 |
+| 会話からの簡単な指示 | 追従・停止・注視・近くの落下物の拾得・所持品全体の受け渡し・原木の採取（個数指定） |
+| 型付きSkill | collect_drop、mine、collect_block。引数付きSkillの自然文選択はcollect_block(minecraft:log)のみ対応、他は未対応 |
 | 終端結果の発話 | 成功・失敗・取消と確定した部分成果を表示。既存Socialモデルは3候補から表現を選択 |
 | 割り込み | 即時停止、指示の置換、古い判断の破棄。通常会話は操作と別に処理 |
 | 観測 | 上限付きsnapshot/delta同期。全世界を探索する機能ではない |
@@ -23,6 +23,7 @@ Minecraft Forge側でゲーム操作を実行し、PythonのAgent Daemonで会�
 | `!agent follow` / `!agent stop` / `!agent look` | LLMを使わない手動操作 |
 | `!agent say こんにちは` / `!agent status` | 発話／状態・所持品確認 |
 | `!agent chat ついてきて` | 会話から限定intentを受け付ける |
+| `!agent chat 原木を5個取ってきて` | 会話からcollect_block(minecraft:log)を個数付きで開始（個数省略・曖昧・範囲外は開始せず聞き返す） |
 | `!agent do follow` / `!agent do look` / `!agent do stop` | 判断経由の操作 |
 | `!agent pickup` / `!agent deposit` | 手動で近くの落下物を拾う／所持品全体を渡す |
 | `!agent do pickup` / `!agent do deposit` | 判断経由で拾得／受け渡し |

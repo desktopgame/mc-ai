@@ -249,7 +249,7 @@ public final class PingBridge {
             if (done.turn != null && queue.current(done.turn) && owner != null) {
                 if (done.reply.intent.equals("none")) { reply(done.reply.say); }
                 else if (System.nanoTime() - done.received > 5000000000L) { debugReply("時間が経過した指示は取り消しました。必要ならもう一度依頼してください。"); }
-                else if (actions.acceptIntent(owner, done.turn.intentTicket, done.reply.intent)) { reply(done.reply.say); }
+                else if (actions.acceptIntent(owner, done.turn.intentTicket, done.reply.intent, done.reply.count)) { reply(done.reply.say); }
             }
         }
         TerminalDone finished = terminalDone;

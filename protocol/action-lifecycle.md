@@ -70,7 +70,20 @@ Forgeは会話受付時の順序ticketを保持する。雑談は行動の順序
 新しい会話セッション、観測セッション、forget、失敗・切断時にも旧intentを実行しない。
 受理後は既存のgoalRevision/actionIdの検証に従う。Socialのreplyを実行結果として扱わない。
 
-`!agent chat` の本文全体が短い停止表現に一致する場合は、ローカルで停止して世代を更新する。
+## 会話からのtyped Skill開始 — collect_block(minecraft:log)
+
+`intent` に `collect_block_log` を追加した。応答へ `count`（整数またはnull）を追加する。
+
+```json
+{"version":1,"say":"原木を5個集めてくるね。","intent":"collect_block_log","count":5,"actions":[]}
+```
+
+対象は `minecraft:log` に固定（LLMはtargetもprimitive列も生成しない。既存のtyped Skill選択のうち1つを選ぶだけ）。
+countは1～64。発言中に個数が明示され、範囲内の整数として一意に読み取れる場合だけcollect_block_logとcountを返す。
+個数が未指定・範囲外・小数・複数候補で曖昧な場合はSocialが自らintent:none/count:nullへ倒し、個数をひとつだけ聞き返す。
+Daemonは黙って個数を補完しない。`count`はcollect_block_log以外のintentでは常にnull（他intentでの値はDaemon側で破棄する）。
+Forgeは受理時に`!agent do collect_block minecraft:log <count>`と同じv2 Skill起動経路を使い、会話の順序ticketで通常のintentと同様に取消・置換される。
+countが1～64の整数でない場合、Forgeは応答全体を不正として拒否し実行しない（Social側の検証と独立した二重チェック）。
 この処理はSocialのFIFOを迂回し、モデルを呼ばず、待機列が満杯でも機能する。部分一致や引用・否定は対象外。
 対象表現は `ImmediateStop.java` に固定し、通常の会話・解釈・人格をForgeへ移さない。
 停止以外の自然文はSocialのFIFOで分類し、最新の受理したintentを優先する。

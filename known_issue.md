@@ -80,7 +80,7 @@ Python全155件の初回実行で `test_wrong_route_and_content_type` が期待�
 
 ## 今回の区切りで未対応の機能
 
-採掘時の道具耐久値消費・詳細metadata対応、attack / place / craft / smelt、JEV・Planner、自然文からの引数付きSkill選択、長期記憶、全世界探索、マルチプレイヤー、cloud routing。これらは既存機能の不具合とは区別する。
+採掘時の道具耐久値消費・詳細metadata対応、attack / place / craft / smelt、JEV・Planner、collect_block(minecraft:log)以外の自然文からの引数付きSkill選択（collect_dropや他ブロックのcollect_block、mine等）、長期記憶、全世界探索、マルチプレイヤー、cloud routing。これらは既存機能の不具合とは区別する。
 
 ## 修正反映済みのレビュー
 

@@ -107,6 +107,49 @@ class IntentTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_PLAYER", encoded)
         self.assertNotIn("reply", encoded)
 
+    def test_collect_block_log_intent_carries_a_validated_count(self):
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        provider.output = {"reply": "原木を5個集めてくるね。", "intent": "collect_block_log", "count": 5}
+        response = turn(payload("原木を5個取ってきて"), brain)
+        self.assertEqual(response["intent"], "collect_block_log")
+        self.assertEqual(response["count"], 5)
+        self.assertEqual(response["actions"], [])
+
+    def test_collect_block_log_never_starts_with_a_missing_or_out_of_range_count(self):
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        for count in (None, 0, 65, -1):
+            provider.output = {"reply": "任せて。", "intent": "collect_block_log", "count": count}
+            response = turn(payload("木を集めて"), brain)
+            self.assertEqual(response["intent"], "none", count)
+            self.assertIsNone(response["count"], count)
+
+    def test_collect_block_log_rejects_a_wrong_typed_count_as_malformed_output(self):
+        # Unlike a missing/out-of-range count (ambiguous request, gracefully falls back to none), a
+        # wrong-typed count means the provider violated the schema shape, same as an invalid intent.
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        for count in (2.5, "5", True):
+            provider.output = {"reply": "任せて。", "intent": "collect_block_log", "count": count}
+            with self.assertRaises(SocialError): turn(payload("原木を5個取ってきて"), brain)
+            self.assertFalse(brain.histories)
+
+    def test_collect_block_log_respects_the_same_negation_and_quotation_guard(self):
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        for text in ("原木を5個集めないで", "『原木を5個集めて』と言われた", "もし木があれば5個集めて"):
+            provider.output = {"reply": "任せて。", "intent": "collect_block_log", "count": 5}
+            response = turn(payload(text), brain)
+            self.assertEqual(response["intent"], "none", text)
+            self.assertIsNone(response["count"], text)
+
+    def test_a_stray_count_never_leaks_out_of_the_intents_that_use_it(self):
+        # Regression guard: an existing intent (follow/pickup/etc.) must never carry a count, even if
+        # a misbehaving provider attaches one.
+        provider = IntentProvider(); brain = SocialBrain(provider)
+        for intent in ("follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items"):
+            provider.output = {"reply": "受け付けたよ。", "intent": intent, "count": 5}
+            response = turn(payload(), brain)
+            self.assertEqual(response["intent"], intent)
+            self.assertIsNone(response["count"], intent)
+
     def test_structured_local_transport_and_truncation(self):
         state = {"finish": "stop"}
         class Model(BaseHTTPRequestHandler):
@@ -126,5 +169,27 @@ class IntentTests(unittest.TestCase):
             self.assertEqual(state["request"]["messages"][-1]["content"], "こっちを見て")
             state["finish"] = "length"
             with self.assertRaises(SocialError): turn(payload(), SocialBrain(provider))
+        finally:
+            server.shutdown(); server.server_close(); worker.join()
+
+    def test_structured_local_transport_carries_collect_block_log_count_end_to_end(self):
+        state = {}
+        class Model(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                state["request"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                body = json.dumps({"choices": [{"finish_reason": "stop", "message": {
+                    "content": json.dumps({"reply": "原木を5個集めてくるね。", "intent": "collect_block_log", "count": 5})}}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
+        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+        try:
+            provider = LocalSocialProvider({"base_url": "http://127.0.0.1:%d/v1" % server.server_port, "model": "test"})
+            response = turn(payload("原木を5個取ってきて"), SocialBrain(provider))
+            self.assertEqual(response["intent"], "collect_block_log")
+            self.assertEqual(response["count"], 5)
+            schema = state["request"]["response_format"]["json_schema"]["schema"]
+            self.assertIn("count", schema["required"])
+            self.assertIn("collect_block_log", schema["properties"]["intent"]["enum"])
         finally:
             server.shutdown(); server.server_close(); worker.join()

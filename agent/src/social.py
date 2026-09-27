@@ -18,26 +18,40 @@ DEFAULT_PERSONA = (
     "通常は1～3文、160文字以内で返答してください。返答本文だけを出力し、思考過程は出力しません。"
     "実際のゲーム状態は与えられていません。世界を観測したり操作を完了したと偽らないでください。"
 )
-INTENTS = ("none", "follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items")
+INTENTS = ("none", "follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items", "collect_block_log")
+# Intents that also carry a count. The Skill's target is fixed (minecraft:log only, matching the
+# typed collect_block MVP); the model never proposes a target or a primitive sequence, only this
+# one pre-built Skill selection plus the quantity it read from the request.
+INTENTS_WITH_COUNT = ("collect_block_log",)
+COLLECT_BLOCK_LOG_MIN, COLLECT_BLOCK_LOG_MAX = 1, 64
 INTENT_INSTRUCTIONS = (
     "返答は指定のJSONだけを出力してください。replyは短い日本語の返答、intentは最後のuser発言だけから選びます。"
     "過去の会話にある依頼を再実行してはいけません。現在、実行できる目的は所有者への追従、停止、所有者への注視、"
-    "近くに落ちているアイテムの拾得、持っているものの受け渡しだけです。"
+    "近くに落ちているアイテムの拾得、持っているものの受け渡し、原木の採取だけです。"
     "直接あなたへ頼んでいる明確な現在の依頼なら、ついてきて→follow_owner、止まって→stop、こっちを見て→look_at_owner、"
     "拾って・落ちてるもの拾って→pickup_item、渡して・ちょうだい・持ってるもの全部渡して→deposit_items。"
     "拾得は最も近い落下物だけが対象で、種類を選べません。受け渡しは持ち物すべてが対象で、品物を選べません。"
     "特定の品物を指定した依頼はnoneにして、近くの落ちているものなら拾える・持ち物はすべてまとめて渡せると説明してください。"
+    "原木・丸太・木を集める/取ってくる/持ってくる依頼で、その発言の中に1～64の整数の個数がひとつだけはっきり書かれている場合だけ"
+    "collect_block_log にし、countへその個数を入れてください。個数が書かれていない、範囲外（0や65以上）、小数、"
+    "『数個』『2、3個』のような曖昧・複数候補の場合はnoneにしてcountはnullにし、1～64の具体的な個数をひとつだけ聞き返してください。"
+    "原木以外の資源（丸太以外の木材、鉱石等）の採取・採掘依頼はnone（未対応）。countは collect_block_log のときだけ使い、"
+    "それ以外のintentではnullにしてください。"
     "それ以外はnone。雑談、否定、引用、翻訳、質問、条件付き・仮定の話、第三者への指示、複数の操作の依頼、"
     "あそこへ行く・採掘や設置等の未対応操作、目的が曖昧な表現はnoneにして説明または確認してください。"
     "例: こんにちは→none、止まらないで→none（今の動作を変えないと返答し、停止の確認をしない）、『ついてきて』という意味は？→none、"
     "敵が来たら止まって→none、あの木を見て→none、鉄を取ってきて→none（採掘は未対応）、ダイヤだけ拾って→none（種類の指定は不可）、"
-    "そこに落ちてるの拾って→pickup_item、持ってるもの渡して→deposit_items、砂だけ渡して→none（種類の指定は不可）。"
+    "そこに落ちてるの拾って→pickup_item、持ってるもの渡して→deposit_items、砂だけ渡して→none（種類の指定は不可）、"
+    "原木を5個取ってきて→collect_block_log（count=5）、木を3個集めて→collect_block_log（count=3）、"
+    "木を集めて→none（個数不明、個数を聞き返す）、原木を100個集めて→none（範囲外、個数を聞き返す）、"
+    "原木を2、3個集めて→none（個数が曖昧、個数を聞き返す）、原木を5個集めないで→none（否定）。"
     "intentがある場合、replyは依頼を受け付ける返答にし、実行開始・成功を断定しないでください。"
     "実行可否は後の別処理で決まります。自由形式のコマンドや操作パラメーターは出力しないでください。"
 )
 SOCIAL_SCHEMA = {"type": "object", "additionalProperties": False,
-                 "properties": {"reply": {"type": "string"}, "intent": {"type": "string", "enum": list(INTENTS)}},
-                 "required": ["reply", "intent"]}
+                 "properties": {"reply": {"type": "string"}, "intent": {"type": "string", "enum": list(INTENTS)},
+                                "count": {"type": ["integer", "null"]}},
+                 "required": ["reply", "intent", "count"]}
 SOCIAL_RESPONSE_FORMAT = {"type": "json_schema", "json_schema": {
     "name": "social_turn", "strict": True, "schema": SOCIAL_SCHEMA}}
 
@@ -80,11 +94,17 @@ def keep_current_request(text):
 
 
 def validate_social_turn(value):
-    if not isinstance(value, dict) or set(value) != {"reply", "intent"}:
+    # "count" is optional here (defaults to None) so callers/tests that predate this field still work;
+    # the real provider's strict JSON schema always includes it.
+    if not isinstance(value, dict) or "reply" not in value or "intent" not in value \
+            or set(value) - {"reply", "intent", "count"}:
         raise SocialError("invalid_social_turn")
     if type(value["intent"]) is not str or value["intent"] not in INTENTS:
         raise SocialError("invalid_intent")
-    return {"reply": validate_reply(value["reply"]), "intent": value["intent"]}
+    count = value.get("count")
+    if count is not None and type(count) is not int:
+        raise SocialError("invalid_count")
+    return {"reply": validate_reply(value["reply"]), "intent": value["intent"], "count": count}
 
 
 class SocialError(Exception):
@@ -265,10 +285,20 @@ class SocialBrain:
                                                        SOCIAL_RESPONSE_FORMAT if with_intent else None)
             if with_intent:
                 # No world state is available here: acknowledge unchanged behavior, never claim a task.
-                result = ({"reply": "わかった。今の動作は変えないよ。", "intent": "none"}
+                result = ({"reply": "わかった。今の動作は変えないよ。", "intent": "none", "count": None}
                           if continuation else validate_social_turn(self.provider.reply_with_intent(messages)))
                 if result["intent"] != "none" and not allows_intent(text):
-                    result = {"reply": "その表現では操作を変更しません。今してほしい操作を、ひとつだけ直接依頼してください。", "intent": "none"}
+                    result = {"reply": "その表現では操作を変更しません。今してほしい操作を、ひとつだけ直接依頼してください。",
+                              "intent": "none", "count": None}
+                if result["intent"] in INTENTS_WITH_COUNT:
+                    # Ambiguous/missing/out-of-range counts never get silently filled in; the request
+                    # simply does not start, and we ask for exactly one explicit number instead.
+                    if type(result["count"]) is not int or not COLLECT_BLOCK_LOG_MIN <= result["count"] <= COLLECT_BLOCK_LOG_MAX:
+                        result = {"reply": "何個集めればいいか、1から64の数字でひとつだけ教えてください。",
+                                  "intent": "none", "count": None}
+                elif result["count"] is not None:
+                    # Defensive: a count is meaningless for any other intent, so it never reaches Forge.
+                    result = {"reply": result["reply"], "intent": result["intent"], "count": None}
                 reply = result["reply"]
             else:
                 reply = validate_reply(self.provider.reply(messages))

@@ -128,10 +128,18 @@ public final class ActionBridge {
         synchronize(player); return intentOrder.capture();
     }
 
-    /** Returns false for stale/rejected intents so their optimistic Social reply is not displayed. */
-    public boolean acceptIntent(EntityPlayerMP player, IntentOrder.Ticket ticket, String goal) {
+    /**
+     * Returns false for stale/rejected intents so their optimistic Social reply is not displayed.
+     * `count` is only meaningful (and required, 1-64) for a Skill-selecting intent such as
+     * collect_block_log; Social already validated it, this is a second, independent check.
+     */
+    public boolean acceptIntent(EntityPlayerMP player, IntentOrder.Ticket ticket, String goal, Integer count) {
         synchronize(player);
         if (!intentOrder.current(ticket)) { debugReply("以前の指示への返答は取り消しました。"); return false; }
+        if (goal.equals("collect_block_log")) {
+            if (count == null || count < 1 || count > 64) { return false; }
+            return requestCollectBlockIntent(player, count, ticket);
+        }
         return requestGoal(player, goal, ticket);
     }
 
@@ -202,13 +210,13 @@ public final class ActionBridge {
         return true;
     }
 
-    // ---- v2 Skill: collect_drop / mine ----------------------------------
+    // ---- v2 Skill: collect_drop / mine / collect_block --------------------
     private boolean requestSkill(EntityPlayerMP player, String item, int count) {
         JsonObject goal = new JsonObject();
         goal.addProperty("type", "collect_drop");
         JsonObject target = new JsonObject(); target.addProperty("item", item); goal.add("target", target);
         goal.addProperty("count", count); goal.add("constraints", new JsonArray());
-        return startSkill(player, goal, "item", item, count, "collect_drop");
+        return startSkill(player, goal, "item", item, count, "collect_drop", null);
     }
 
     private boolean requestMine(EntityPlayerMP player, String block) {
@@ -216,7 +224,7 @@ public final class ActionBridge {
         goal.addProperty("type", "mine");
         JsonObject target = new JsonObject(); target.addProperty("block", block); goal.add("target", target);
         goal.addProperty("count", 1); goal.add("constraints", new JsonArray());
-        return startSkill(player, goal, "block", block, 1, "mine");
+        return startSkill(player, goal, "block", block, 1, "mine", null);
     }
 
     private boolean requestCollectBlock(EntityPlayerMP player, String block, int count) {
@@ -224,10 +232,20 @@ public final class ActionBridge {
         goal.addProperty("type", "collect_block");
         JsonObject target = new JsonObject(); target.addProperty("block", block); goal.add("target", target);
         goal.addProperty("count", count); goal.add("constraints", new JsonArray());
-        return startSkill(player, goal, "block", block, count, "collect_block");
+        return startSkill(player, goal, "block", block, count, "collect_block", null);
     }
 
-    private boolean startSkill(EntityPlayerMP player, JsonObject goal, String field, String name, int count, String label) {
+    /** Natural-language collect_block_log intent: same Skill start, ordered by the chat intent ticket. */
+    private boolean requestCollectBlockIntent(EntityPlayerMP player, int count, IntentOrder.Ticket ticket) {
+        JsonObject goal = new JsonObject();
+        goal.addProperty("type", "collect_block");
+        JsonObject target = new JsonObject(); target.addProperty("block", "minecraft:log"); goal.add("target", target);
+        goal.addProperty("count", count); goal.add("constraints", new JsonArray());
+        return startSkill(player, goal, "block", "minecraft:log", count, "collect_block", ticket);
+    }
+
+    private boolean startSkill(EntityPlayerMP player, JsonObject goal, String field, String name, int count,
+                               String label, IntentOrder.Ticket ticket) {
         synchronize(player);
         MinecraftServer server = MinecraftServer.getServer();
         CompanionEntity companion = CompanionCommands.find(player);
@@ -236,7 +254,8 @@ public final class ActionBridge {
             reply("Companionと観測の同期を確認してください。ワールド内で数秒待ってから試せます。"); return false;
         }
         if (results.size() >= 60) { reply("実行結果の送信が混雑しています。少し待ってください。"); return false; }
-        cancelActive("replaced"); closeSkill("replaced", false); intentOrder.manual();
+        cancelActive("replaced"); closeSkill("replaced", false);
+        if (ticket == null) { intentOrder.manual(); } else { intentOrder.accept(ticket); }
         companion.stop(); active = null;
         state.replace(label);
         skillState.reset(state.session); skillState.revision = state.revision;

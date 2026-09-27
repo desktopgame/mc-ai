@@ -44,18 +44,35 @@ public class IntentTest {
     }
     /** Every intent the daemon may emit must round-trip, or the reply fails as a transport error. */
     @Test public void everySupportedIntentIsAccepted() throws Exception {
-        String template = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"%s\"}";
+        String template = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"%s\",\"count\":null}";
         for (String intent : new String[] {"none", "follow_owner", "stop", "look_at_owner", "pickup_item", "deposit_items"}) {
             assertEquals(intent, PingClient.parseSocialReply(String.format(template, intent)).intent);
         }
     }
     @Test public void unknownOrMalformedIntentNeverBecomesAnAction() throws Exception {
-        String valid = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"follow_owner\"}";
+        String valid = "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"follow_owner\",\"count\":null}";
         assertEquals("follow_owner", PingClient.parseSocialReply(valid).intent);
         for (String text : new String[] {valid.replace("follow_owner", "mine"), valid.replace("[]", "[{\"type\":\"follow\"}]"),
-                "{\"version\":1,\"say\":\"OK\",\"actions\":[]}", valid.replace("\"follow_owner\"", "null"),
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"count\":null}", valid.replace("\"follow_owner\"", "null"),
                 valid.replace("\"follow_owner\"", "{\"type\":\"follow_owner\"}")}) {
             try { PingClient.parseSocialReply(text); fail("Invalid intent accepted"); }
+            catch (IOException expected) { }
+        }
+    }
+    /** collect_block_log is the only intent that carries a count; every other intent must not. */
+    @Test public void collectBlockLogRequiresAnInRangeCountAndOtherIntentsRejectOne() throws Exception {
+        PingClient.Reply reply = PingClient.parseSocialReply(
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":5}");
+        assertEquals("collect_block_log", reply.intent);
+        assertEquals(Integer.valueOf(5), reply.count);
+        for (String text : new String[] {
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":null}",   // missing
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":0}",      // below range
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":65}",     // above range
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":2.5}",    // non-integer
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"collect_block_log\",\"count\":\"5\"}",  // wrong type
+                "{\"version\":1,\"say\":\"OK\",\"actions\":[],\"intent\":\"follow_owner\",\"count\":5}"}) {        // count on a non-count intent
+            try { PingClient.parseSocialReply(text); fail("Invalid count accepted: " + text); }
             catch (IOException expected) { }
         }
     }
