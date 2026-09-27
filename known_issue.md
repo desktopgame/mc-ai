@@ -86,7 +86,7 @@ Python全155件の初回実行で `test_wrong_route_and_content_type` が期待�
 本来ジャンプすれば届く距離でもCompanionがその場で停止し、拾得（`CompanionEntity.PickupTargetTask`）が進行しなくなる。
 根本原因は`PickupTargetTask`/`PickupTask`が`getNavigator().tryMoveToEntityLiving(item, 1.0D)`でitem entityへ直接pathingしていたこと。
 KI-12/KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`PickupApproach`がitem周辺の標準位置リング（半径1→2、companionの現在Y基準）から
-「立てる」候補（`MineObstruction.isBlockingMaterial`で足場・頭上を判定）を探し、見つかればitem entityではなくその地面座標へ`tryMoveToXYZ`する（`CompanionEntity.moveTowardItem`）。
+「立てる」候補（`MineObstruction.standable`で足場・頭上を判定。`MineApproach`とも共有）を探し、見つかればitem entityではなくその地面座標へ`tryMoveToXYZ`する（`CompanionEntity.moveTowardItem`）。
 見つからない場合は従来の`tryMoveToEntityLiving`にフォールバックする。`PickupApproachTest`で純粋ロジックを検証済み。
 Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外、[scenario-runner.md](protocol/scenario-runner.md)参照）のため実機確認が必要。
 
@@ -96,17 +96,28 @@ Minecraft地形上の実際の到達可否はJava unit testの対象外（scenar
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。ブロックなど明らかに回り込んで到達できる遮蔽物があっても、Companionが手前で停止し目的の場所まで移動しない。
 根本原因は`MineTargetTask`が常に生の対象座標（`mineX,mineY,mineZ`）へ`tryMoveToXYZ`していたこと。到達判定`MineObstruction.accessible`自体は直線LoSのMVP実装のまま変更していない。
 KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`MineApproach`が対象周辺の標準位置リング（半径1→2→3→4、companionの現在Y基準、8方位）から
-`MineObstruction.accessible`で実際にLoSが通る候補を探し、見つかった最小半径の中でcompanionに最も近いものへ`tryMoveToXYZ`する（`CompanionEntity.moveTowardMineTarget`）。
-見つからない場合は従来どおり生の対象座標へフォールバックし、採掘直前の最終再検証（同一tickでのblocked判定）は変更していない。`MineApproachTest`で純粋ロジックを検証済み。
+「立てる」かつ`MineObstruction.accessible`でLoSが通る候補を探し、見つかった最小半径の中でcompanionに最も近いものへ`tryMoveToXYZ`する。
+見つからない場合は従来どおり生の対象座標へフォールバックする。`MineApproachTest`で純粋ロジックを検証済み。
+実機再確認でKI-13側に追加の不具合（下記）が見つかり、それに対する2回目の修正でKI-12の制御フローも合わせて直した。
 Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外）のため実機確認が必要。
 
 ## KI-13 見えるが、壊せるとは限らない
 
-状態: 局所改善を実装／実機確認待ち。
+状態: 局所改善を実装（2回目）／実機確認待ち。
 ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。すると近くまで接近するが、破壊が行われない。
-「mine_target が採掘可能な stand position を探索しない」という、KI-12と同根の問題として確定した。KI-11/KI-12と同じ`MineApproach`の標準位置リング探索で対応した。
-`MineApproachTest#elevatedTargetOnAThinColumnIsUnreachableFromDirectlyBelowButReachableFromFartherBack`にこの3段積みシナリオそのものを再現したテストがあり、
-直下では直線LoSが積み上げたブロック自身に遮られるが、水平距離を取った候補では通ることを確認済み。実機での再現条件・確認は別途必要。
+「mine_target が採掘可能な stand position を探索しない」という、KI-12と同根の問題として確定した。
+
+1回目の修正（`MineApproach`のLoSのみの候補探索を追加）では未解消と実機で再確認された。回り込む動きはするが途中の状況で停止し採掘しない、との報告。
+調査の結果、2つの不足が判明した。
+(a) `MineApproach`の候補判定がLoSのみで、立てない位置（足場なし・頭上closed等）もLoSが通ってさえいれば選ばれ得た。
+(b) より根本的に、`MineTargetTask`は生の対象座標からの距離が採掘可能圏内（約4.5ブロック）に入った**瞬間**に経路を打ち切り、その場からLoSを1回だけ判定して不可なら即`blocked`で終端していた。
+    `MineApproach`が選んだ候補へ向かう途中、そのしきい値をたまたま先に跨いだ地点（候補とは別の、LoSが通っていない地点）で足止め・即失敗していたため、
+    候補探索自体は正しく回り込む方向を示していても、そこへ実際に到達する前に諦めていた。
+
+対処: `MineObstruction.standable`（`PickupApproach`と共有）を`MineApproach`にも適用し、立てない候補を除外した。
+`MineTargetTask`は「採掘可能圏内かつ現在地からLoSが通っている」ときだけ採掘へ進み、それ以外は毎秒`MineApproach`を現在位置から再計算して次の候補へ移動し続ける方式に変更した。
+`blocked`で終端するのは、採掘可能圏内まで来てなお候補が1つも（現在地含め）見つからない場合だけに限定した。採掘直前の最終再検証（`breakBlock`内の同一tickでの再判定）は変更していない。
+`MineApproachTest`にLoSが通るが立てない候補をスキップするテストと、3段積みシナリオのテストを追加・維持。実機での再確認が必要。
 
 ## KI-14 川を渡れない
 

@@ -20,12 +20,15 @@ public final class MineApproach {
     }
 
     /**
-     * Returns a stand position around (tx,ty,tz) with a clear line of sight to the target, or null when
-     * no ring candidate has one (the caller should keep its existing fallback behavior, e.g. approaching
-     * the raw target coordinate as before). Tries the smallest radius shell first — so an ordinary,
-     * unobstructed target is still approached the old way, right up close — and only backs off to a
-     * larger radius when every candidate at the smaller radius is blocked. Within a shell, the candidate
-     * nearest the companion's current position wins (KI-12/KI-13/FR-02's "prefer an executable candidate").
+     * Returns a stand position around (tx,ty,tz) that is both standable and has a clear line of sight
+     * to the target, or null when no ring candidate qualifies (the caller should keep its existing
+     * fallback behavior, e.g. approaching the raw target coordinate as before). A candidate with a
+     * clear line of sight but nowhere to actually stand (mid-air, inside a wall, over a hole) is never
+     * returned: the navigator could never deliver the companion there, so "accessible" alone is not
+     * "reachable" (KI-13). Tries the smallest radius shell first — so an ordinary, unobstructed target
+     * is still approached the old way, right up close — and only backs off to a larger radius when
+     * every candidate at the smaller radius fails either check. Within a shell, the candidate nearest
+     * the companion's current position wins (KI-12/KI-13/FR-02's "prefer an executable candidate").
      */
     public static Candidate bestStandPosition(MineObstruction.MaterialLookup lookup, double cx, double cy, double cz,
                                               int tx, int ty, int tz, double eyeHeight) {
@@ -35,6 +38,7 @@ public final class MineApproach {
             double bestDistanceSq = Double.MAX_VALUE;
             for (int[] offset : ApproachCandidates.ring(radius)) {
                 int x = tx + offset[0], z = tz + offset[1];
+                if (!MineObstruction.standable(lookup, x, standY, z)) { continue; }
                 double ex = x + 0.5D, ey = standY + eyeHeight, ez = z + 0.5D;
                 if (!MineObstruction.accessible(ex, ey, ez, tx, ty, tz, lookup)) { continue; }
                 double dx = ex - cx, dy = standY - cy, dz = ez - cz;

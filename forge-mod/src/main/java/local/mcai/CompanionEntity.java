@@ -320,19 +320,6 @@ public final class CompanionEntity extends EntityCreature {
         return getNavigator().tryMoveToEntityLiving(item, 1.0D);
     }
 
-    /**
-     * Approach the mine target via a nearby stand position with a clear line of sight (KI-12/KI-13),
-     * rather than always closing distance to the raw block coordinate. Falls back to the old behavior
-     * when no ring candidate has a clear line of sight; the final accessibility re-check at mining time
-     * is unchanged either way.
-     */
-    private boolean moveTowardMineTarget() {
-        MineApproach.Candidate candidate = MineApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
-                posX, posY, posZ, mineX, mineY, mineZ, getEyeHeight());
-        if (candidate != null) { return getNavigator().tryMoveToXYZ(candidate.x, candidate.y, candidate.z, 1.0D); }
-        return getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
-    }
-
     private EntityPlayer owner() {
         for (Object value : worldObj.playerEntities) {
             EntityPlayer player = (EntityPlayer) value;
@@ -512,12 +499,28 @@ public final class CompanionEntity extends EntityCreature {
             }
             getLookHelper().setLookPosition(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D, 30.0F, 30.0F);
             double distance = getDistanceSq(mineX + 0.5D, mineY + 0.5D, mineZ + 0.5D);
-            if (distance > 20.25D) {
-                // Out of reach: cancel the partial break and walk closer.
+            boolean withinReach = distance <= 20.25D;
+            boolean clearFromHere = withinReach
+                    && MineObstruction.accessible(worldObj, posX, posY + getEyeHeight(), posZ, mineX, mineY, mineZ);
+            if (!clearFromHere) {
+                // Either still out of reach, or arrived somewhere with no clear line of sight: keep
+                // looking for a better stand position rather than declaring blocked from wherever the
+                // raw-distance check happened to catch us (KI-12/KI-13). The final re-check right before
+                // the world mutation, in breakBlock(), is unchanged either way.
                 resetMineProgress(); mineDamage = 0.0F;
                 if (--retryTicks <= 0) {
                     retryTicks = 20;
-                    boolean found = moveTowardMineTarget();
+                    MineApproach.Candidate candidate = MineApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
+                            posX, posY, posZ, mineX, mineY, mineZ, getEyeHeight());
+                    if (candidate == null && withinReach) {
+                        // Close enough that this position is a fair sample, and nothing in the ring
+                        // qualifies either (standable and clear): no local movement can fix this target.
+                        resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
+                    }
+                    int tx = candidate != null ? candidate.x : mineX;
+                    int ty = candidate != null ? candidate.y : mineY;
+                    int tz = candidate != null ? candidate.z : mineZ;
+                    boolean found = getNavigator().tryMoveToXYZ(tx, ty, tz, 1.0D);
                     boolean exhausted = pathRetry.exhausted(found);
                     result(found ? "mining" : exhausted ? "path_not_found" : "path_retrying");
                 }
@@ -526,10 +529,6 @@ public final class CompanionEntity extends EntityCreature {
             getNavigator().clearPathEntity();
             if (System.nanoTime() > controlDeadline) {
                 resetMineProgress(); stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;
-            }
-            // Direct access required before mining starts: never dig through a blocking block.
-            if (!MineObstruction.accessible(worldObj, posX, posY + getEyeHeight(), posZ, mineX, mineY, mineZ)) {
-                resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
             }
             int meta = worldObj.getBlockMetadata(mineX, mineY, mineZ);
             ItemStack tool = bestTool(block, meta);

@@ -20,7 +20,7 @@ public class PickupApproachTest {
         // Item sitting at (10, 0.1, 10); companion 3 blocks north on the same flat floor.
         PickupApproach.Candidate best = PickupApproach.bestStandPosition(flatFloor(), 10.5D, 0.0D, 7.5D, 10.5D, 0.1D, 10.5D);
         assertNotNull(best);
-        assertTrue(PickupApproach.standable(flatFloor(), best.x, best.y, best.z));
+        assertTrue(MineObstruction.standable(flatFloor(), best.x, best.y, best.z));
         // Nearest radius-1 tile to a companion standing north of the item is directly between them.
         assertEquals(10, best.x);
         assertEquals(9, best.z);
@@ -38,11 +38,11 @@ public class PickupApproachTest {
             }
         };
         assertFalse("scenario sanity check: the pit tile must not be standable",
-                PickupApproach.standable(withPit, 10, 0, 9));
+                MineObstruction.standable(withPit, 10, 0, 9));
 
         PickupApproach.Candidate best = PickupApproach.bestStandPosition(withPit, 10.5D, 0.0D, 7.5D, 10.5D, 0.1D, 10.5D);
         assertNotNull(best);
-        assertTrue(PickupApproach.standable(withPit, best.x, best.y, best.z));
+        assertTrue(MineObstruction.standable(withPit, best.x, best.y, best.z));
         assertFalse("must not return the pit tile", best.x == 10 && best.z == 9);
     }
 

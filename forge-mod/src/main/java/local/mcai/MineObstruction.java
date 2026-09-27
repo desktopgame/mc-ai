@@ -33,6 +33,18 @@ public final class MineObstruction {
         return isBlockingMaterial(block.getMaterial());
     }
 
+    /**
+     * True when a companion could actually stand at (x,y,z): solid footing below, passable at feet and
+     * head. Shared by every local approach search (MineApproach/PickupApproach) so a candidate is never
+     * chosen purely on a clear line of sight to somewhere the navigator could never actually place the
+     * companion (mid-air, inside a wall, over a hole).
+     */
+    public static boolean standable(MaterialLookup lookup, int x, int y, int z) {
+        return isBlockingMaterial(lookup.get(x, y - 1, z))
+                && !isBlockingMaterial(lookup.get(x, y, z))
+                && !isBlockingMaterial(lookup.get(x, y + 1, z));
+    }
+
     public static boolean accessible(final World world, double ex, double ey, double ez, int tx, int ty, int tz) {
         return accessible(ex, ey, ez, tx, ty, tz, forWorld(world));
     }
