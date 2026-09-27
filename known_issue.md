@@ -81,7 +81,7 @@ Python全155件の初回実行で `test_wrong_route_and_content_type` が期待�
 
 ## KI-11 破壊済みブロックのdropが目線より高い位置にあると回収できず停止する
 
-状態: 局所改善を実装（2回目）／実機確認待ち。優先度P2。
+状態: 解消済み（2回目の修正、2026-09-28に実機確認）。優先度P2だった。
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。対象ブロックの破壊自体は成功するが、生成したdropアイテムがCompanionの目線より高い位置にあり、
 本来ジャンプすれば届く距離でもCompanionがその場で停止し、拾得（`CompanionEntity.PickupTargetTask`）が進行しなくなる。
 根本原因は`PickupTargetTask`/`PickupTask`が`getNavigator().tryMoveToEntityLiving(item, 1.0D)`でitem entityへ直接pathingしていたこと。
@@ -96,11 +96,13 @@ KI-12/KI-13・FR-02（実行可能な候補を優先する部分）と合わせ�
 `stationary`判定を追加。stationaryなら現在の水平セルを確定的に除外し、`PickupApproach.bestStandPosition`の新しい除外set引数へ渡して二度と同じセルを
 返さないようにした（`MineApproach`と同型の仕組み）。診断ログ（`pickup approach ...`）も追加。汎用の`!agent pickup`（`PickupTask`、targetなし・毎tick対象が
 変わり得る）は対象外のまま単純な`moveTowardItem`を使う。`PickupApproachTest#anExcludedCellIsNeverReturnedEvenIfItWouldOtherwiseWin`で除外の効果を確認済み。
-Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外、[scenario-runner.md](protocol/scenario-runner.md)参照）のため実機確認が必要。
+
+2026-09-28、2回目の修正を実機確認済み。同じ3段積みシナリオでpickupが4秒（候補3回試行）で完了することを確認した（利用者確認・ログ両方で一致）。解消。
+候補を切り替えるたびに一旦停止するため動きがカクつく点は別途KI-15として記録。
 
 ## KI-12 到達可能な対象でも遮蔽物を回り込めず停止する
 
-状態: 局所改善を実装／実機確認待ち。優先度P2。
+状態: 解消済み（KI-13の4回目の修正と合わせて2026-09-28に実機確認）。優先度P2だった。
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。ブロックなど明らかに回り込んで到達できる遮蔽物があっても、Companionが手前で停止し目的の場所まで移動しない。
 根本原因は`MineTargetTask`が常に生の対象座標（`mineX,mineY,mineZ`）へ`tryMoveToXYZ`していたこと。到達判定`MineObstruction.accessible`自体は直線LoSのMVP実装のまま変更していない。
 KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`MineApproach`が対象周辺の標準位置リング（半径1→2→3→4、companionの現在Y基準、8方位）から
@@ -111,7 +113,7 @@ Minecraft地形上の実際の到達可否はJava unit testの対象外（scenar
 
 ## KI-13 見えるが、壊せるとは限らない
 
-状態: 局所改善を実装（4回目）／実機確認待ち。
+状態: 解消済み（4回目の修正、2026-09-28に実機確認）。
 ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。すると近くまで接近するが、破壊が行われない。
 「mine_target が採掘可能な stand position を探索しない」という、KI-12と同根の問題として確定した。
 
@@ -132,7 +134,7 @@ Minecraft地形上の実際の到達可否はJava unit testの対象外（scenar
 
 4つ目の不足として、`MineApproach`が候補選定時に**到達距離（mining reach）を一切見ていなかった**ことが判明した（standable・LoSは見ていたが、届くかどうかは
 `MineTargetTask`側の別チェック任せだった）。対処:
-- `MineObstruction.MAX_REACH_SQUARED`（20.25、`MineTargetTask`の到達判定と共有）を追加し、`MineApproach`の候補フィルタに组み込んだ。実際の着地位置のブレを
+- `MineObstruction.MAX_REACH_SQUARED`（20.25、`MineTargetTask`の到達判定と共有）を追加し、`MineApproach`の候補フィルタに組み込んだ。実際の着地位置のブレを
   吸収するため、ハード上限より少し狭い`REACH_MARGIN_SQUARED`（18.0、実距離で約0.26ブロックの余裕）で候補をふるいにかける。
   これにより上記の対角線候補（20.25）は除外され、同じ半径の軸沿い候補（16.25）が選ばれるようになった。
 - `mineFailedCells`への登録条件を`withinReach`だけでなく、**直近の再計算から実位置がほぼ動いていない（`stationary`）場合も含める**よう拡張した
@@ -141,12 +143,24 @@ Minecraft地形上の実際の到達可否はJava unit testの対象外（scenar
 
 `MineApproachTest`に、実際に観測された座標そのものを使った回帰テスト（`aBoundaryLineDiagonalCandidateIsSkippedForASaferAxisAlignedOne`）と、
 到達距離だけで候補が棄却されるケース（`candidatesFarOutOfReachDespiteClearSightAreNeverReturned`）を追加。
-診断ログはCompanionEntity側に残しており、次に何か起きた場合もこちらでログを直接読んで解析できる。実機での再確認が必要。
+診断ログはCompanionEntity側に残しており、次に何か起きた場合もこちらでログを直接読んで解析できる。
+
+2026-09-28、4回目の修正を実機確認済み。3段積みシナリオでmineが3秒で完了することを確認した（利用者確認・ログ両方で一致）。解消。
+見た目のカクつき（除外→再候補のたびに停止して経路を引き直す）は別途KI-15として記録。
 
 ## KI-14 川を渡れない
 
 状態：実機再現あり／未実装
 「ついてきて」のあとプレイヤーが川の向こう岸へ行くと、ついてこれずに止まる。
+
+## KI-15 mine/pickupの候補切り替え中の動きがカクつく
+
+状態: 実機確認あり／優先度低（メモ）。
+KI-11/KI-12/KI-13の対処（`mineFailedCells`/`pickupFailedCells`による候補除外）は、行き詰まった候補を1秒ごとに切り替えて確実に収束させる設計のため、
+切り替えのたびに`getNavigator()`の経路を引き直し、見た目上Companionが一瞬止まってから動き出す、を繰り返す。2026-09-28の実機確認では
+pickupが3候補を試して4秒で完了しており、機能面は正常だが動きが滑らかでない。
+利用者の判断で優先度は低（メモ程度）。対処するなら、除外後すぐに次の候補へ再計算するのではなく経路が実際に進んでいるかで判定を分ける、
+候補間の遷移をなめらかにする等が考えられるが、今回は着手しない。
 
 ## 今回の区切りで未対応の機能
 
