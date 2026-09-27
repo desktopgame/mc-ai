@@ -2,6 +2,8 @@
 
 ## 現在のAPI索引
 
+テスト基盤の設計案: [Headless scenario runner](scenario-runner.md)（2026-09-27、設計のみ・未実装）。偽Forgeから実Daemon HTTPへ観測とreceiptを注入する構成。Minecraftの移動・衝突は再現しない。
+
 MOD v0.1.0はwire protocol v1/v2を併用する。以下のPhases 1～5の説明は導入時の履歴も含む。現在の実行経路はこの表と各仕様を参照。
 
 | protocol | endpoint | 責務 |
