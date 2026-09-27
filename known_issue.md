@@ -106,6 +106,11 @@ KI-07で「壁への回り込み」として未検証としていた項目が実
 すると近くまで接近するが、破壊が行われない。
 「mine_target が採掘可能な stand position を探索しない」というより一般的な問題？
 
+## KI-14 川を渡れない
+
+状態：実機再現あり／未実装
+「ついてきて」のあとプレイヤーが川の向こう岸へ行くと、ついてこれずに止まる。
+
 ## 今回の区切りで未対応の機能
 
 採掘時の道具耐久値消費・詳細metadata対応、attack / place / craft / smelt、JEV・Planner、collect_block(minecraft:log)以外の自然文からの引数付きSkill選択（collect_dropや他ブロックのcollect_block、mine等）、長期記憶、全世界探索、マルチプレイヤー、cloud routing。これらは既存機能の不具合とは区別する。
