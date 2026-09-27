@@ -15,7 +15,9 @@ import net.minecraft.nbt.NBTTagList;
 import net.minecraft.util.DamageSource;
 import net.minecraft.world.World;
 import org.apache.logging.log4j.LogManager;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.UUID;
 
@@ -47,6 +49,24 @@ public final class CompanionEntity extends EntityCreature {
     private String mineOutcome = "";
     private float mineDamage;
     private int mineSwingTicks;
+    // Cells the companion already stood in and confirmed still lack a clear line of sight to the
+    // current mine target (KI-13): excluded from MineApproach so a single bad prediction (the pre-check
+    // assumes an idealized block-center position, real collision may settle elsewhere in the cell)
+    // cannot make the search return the same unusable spot forever. Cleared per new mine target.
+    private static final int MAX_MINE_FAILED_CELLS = 64;
+    private final LinkedHashSet<Long> mineFailedCells = new LinkedHashSet<Long>();
+    // Position at the previous mine-approach retry tick (~1s ago), to detect "not making progress"
+    // independent of the raw-target reach check: a candidate can read as in-reach on paper yet not be,
+    // once actually stood on (KI-13). NaN means "no previous sample yet" (never treated as stationary).
+    private double lastMineApproachX = Double.NaN, lastMineApproachY, lastMineApproachZ;
+    private static final double MINE_STATIONARY_EPSILON_SQUARED = 0.0025D;
+    // Same mechanism as mineFailedCells/lastMineApproach*, applied to the target-fixed pickup (KI-11):
+    // a cell confirmed to still not get within pickup range is never offered again by PickupApproach.
+    // Cleared per new pickup target.
+    private static final int MAX_PICKUP_FAILED_CELLS = 32;
+    private final LinkedHashSet<Long> pickupFailedCells = new LinkedHashSet<Long>();
+    private double lastPickupApproachX = Double.NaN, lastPickupApproachY, lastPickupApproachZ;
+    private static final double PICKUP_STATIONARY_EPSILON_SQUARED = 0.0025D;
 
     public CompanionEntity(World world) {
         super(world);
@@ -99,6 +119,8 @@ public final class CompanionEntity extends EntityCreature {
         pickupMaxCount = maxCount;
         pickupStored = -1;
         pickupOutcome = "";
+        pickupFailedCells.clear();
+        lastPickupApproachX = Double.NaN;
         result("picking_up");
     }
     public boolean pickupResolved() { return pickupStored >= 0; }
@@ -129,6 +151,8 @@ public final class CompanionEntity extends EntityCreature {
         mineBlockName = blockName;
         minedStored = -1; mineOutcome = "";
         mineDamage = 0.0F; mineSwingTicks = 0;
+        mineFailedCells.clear();
+        lastMineApproachX = Double.NaN;
         task = "mine";
         result("mining");
     }
@@ -467,6 +491,7 @@ public final class CompanionEntity extends EntityCreature {
             if (item == null) { stop(); pickupStored = 0; pickupOutcome = "target_lost"; result("no_item_in_range"); return; }
             getLookHelper().setLookPositionWithEntity(item, 30.0F, 30.0F);
             if (getDistanceSqToEntity(item) <= 2.25D) {
+                lastPickupApproachX = Double.NaN;   // fresh start if it later drifts back out of range
                 getNavigator().clearPathEntity();
                 if (item.delayBeforeCanPickup > 0) { result("picking_up"); return; }
                 // Shared final guard: authority, owner/leash, health, lease and deadline.
@@ -477,7 +502,31 @@ public final class CompanionEntity extends EntityCreature {
             }
             if (--retryTicks <= 0) {
                 retryTicks = 20;
-                boolean found = moveTowardItem(item);
+                // Same rationale as MineTargetTask (KI-13): a candidate that looks fine on paper can
+                // still not get the companion within pickup range once actually stood on. Detecting "not
+                // making progress" and excluding that cell guarantees the search tries somewhere else
+                // instead of offering the same non-working spot forever (KI-11).
+                double sdx = posX - lastPickupApproachX, sdy = posY - lastPickupApproachY, sdz = posZ - lastPickupApproachZ;
+                boolean stationary = !Double.isNaN(lastPickupApproachX)
+                        && sdx * sdx + sdy * sdy + sdz * sdz < PICKUP_STATIONARY_EPSILON_SQUARED;
+                lastPickupApproachX = posX; lastPickupApproachY = posY; lastPickupApproachZ = posZ;
+                if (stationary) {
+                    pickupFailedCells.add(ApproachCandidates.key((int) Math.floor(posX), (int) Math.floor(posZ)));
+                    while (pickupFailedCells.size() > MAX_PICKUP_FAILED_CELLS) {
+                        Iterator<Long> iterator = pickupFailedCells.iterator(); iterator.next(); iterator.remove();
+                    }
+                }
+                PickupApproach.Candidate candidate = PickupApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
+                        posX, posY, posZ, item.posX, item.posY, item.posZ, pickupFailedCells);
+                LogManager.getLogger(CompanionMod.MOD_ID).info(
+                        "pickup approach pos=({},{},{}) item=({},{},{}) stationary={} candidate={} excludedCells={}",
+                        String.format("%.2f", posX), String.format("%.2f", posY), String.format("%.2f", posZ),
+                        String.format("%.2f", item.posX), String.format("%.2f", item.posY), String.format("%.2f", item.posZ),
+                        stationary, candidate == null ? "none" : (candidate.x + "," + candidate.y + "," + candidate.z),
+                        pickupFailedCells.size());
+                boolean found = candidate != null
+                        ? getNavigator().tryMoveToXYZ(candidate.x, candidate.y, candidate.z, 1.0D)
+                        : getNavigator().tryMoveToEntityLiving(item, 1.0D);
                 boolean exhausted = pathRetry.exhausted(found);
                 result(found ? "picking_up" : exhausted ? "path_not_found" : "path_retrying");
             }
@@ -510,11 +559,38 @@ public final class CompanionEntity extends EntityCreature {
                 resetMineProgress(); mineDamage = 0.0F;
                 if (--retryTicks <= 0) {
                     retryTicks = 20;
+                    // "In reach on paper" (MineApproach's own idealized prediction) does not guarantee
+                    // the raw-target reach check ever agrees once really standing there (KI-13: a
+                    // candidate scored exactly at the reach limit, but the real arrival position read as
+                    // just past it, so withinReach alone never went true and the companion never
+                    // requested a different spot). Detecting "not moving between retries" catches that
+                    // case too, regardless of what the reach math says.
+                    double sdx = posX - lastMineApproachX, sdy = posY - lastMineApproachY, sdz = posZ - lastMineApproachZ;
+                    boolean stationary = !Double.isNaN(lastMineApproachX)
+                            && sdx * sdx + sdy * sdy + sdz * sdz < MINE_STATIONARY_EPSILON_SQUARED;
+                    lastMineApproachX = posX; lastMineApproachY = posY; lastMineApproachZ = posZ;
+                    boolean fairSample = withinReach || stationary;
+                    if (fairSample) {
+                        // This exact cell is now a confirmed dead end: never let the search hand back
+                        // this same spot again.
+                        mineFailedCells.add(ApproachCandidates.key((int) Math.floor(posX), (int) Math.floor(posZ)));
+                        while (mineFailedCells.size() > MAX_MINE_FAILED_CELLS) {
+                            Iterator<Long> iterator = mineFailedCells.iterator(); iterator.next(); iterator.remove();
+                        }
+                    }
                     MineApproach.Candidate candidate = MineApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
-                            posX, posY, posZ, mineX, mineY, mineZ, getEyeHeight());
-                    if (candidate == null && withinReach) {
-                        // Close enough that this position is a fair sample, and nothing in the ring
-                        // qualifies either (standable and clear): no local movement can fix this target.
+                            posX, posY, posZ, mineX, mineY, mineZ, getEyeHeight(), mineFailedCells);
+                    // KI-12/13 diagnostics: every retry tick while not ready to mine, independent of the
+                    // deduplicated HUD result() label above, so a stuck approach is visible in the log.
+                    LogManager.getLogger(CompanionMod.MOD_ID).info(
+                            "mine approach pos=({},{},{}) target=({},{},{}) withinReach={} stationary={} candidate={} excludedCells={}",
+                            String.format("%.2f", posX), String.format("%.2f", posY), String.format("%.2f", posZ),
+                            mineX, mineY, mineZ, withinReach, stationary,
+                            candidate == null ? "none" : (candidate.x + "," + candidate.y + "," + candidate.z),
+                            mineFailedCells.size());
+                    if (candidate == null && fairSample) {
+                        // A fair sample, and nothing in the ring qualifies either (standable, in reach,
+                        // clear, and not already confirmed unusable): no local movement can fix this.
                         resetMineProgress(); stop(); minedStored = 0; mineOutcome = "blocked"; result("no_block_in_range"); return;
                     }
                     int tx = candidate != null ? candidate.x : mineX;
@@ -526,6 +602,7 @@ public final class CompanionEntity extends EntityCreature {
                 }
                 return;
             }
+            lastMineApproachX = Double.NaN;   // clear now; a later re-entry into the retry branch starts fresh
             getNavigator().clearPathEntity();
             if (System.nanoTime() > controlDeadline) {
                 resetMineProgress(); stop(); minedStored = 0; mineOutcome = "disconnected"; result("no_block_in_range"); return;

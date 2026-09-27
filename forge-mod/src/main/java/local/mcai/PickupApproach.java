@@ -1,5 +1,8 @@
 package local.mcai;
 
+import java.util.Collections;
+import java.util.Set;
+
 /**
  * Finds a nearby standable ground position next to a dropped item (KI-11), instead of pathing directly
  * to the item entity itself. A companion that already satisfies the pickup distance (2.25 blocksq) from
@@ -23,9 +26,19 @@ public final class PickupApproach {
      * entity directly). Tries the smallest radius first, same rationale as {@link MineApproach}: an
      * ordinary reachable item is still approached the old way, and only a wider ring is tried when the
      * immediate neighborhood offers no footing (KI-11/FR-02's "prefer an executable candidate").
+     *
+     * <p>{@code excludedCells} lets the caller rule out a cell it already stood in and confirmed still
+     * does not get it close enough to collect, so a single bad prediction (the pre-check evaluates a
+     * candidate at its idealized block center, real collision may settle the companion elsewhere in
+     * that cell) cannot make the search return the same unusable spot forever (mirrors MineApproach).
      */
     public static Candidate bestStandPosition(MineObstruction.MaterialLookup lookup, double cx, double cy, double cz,
                                               double ix, double iy, double iz) {
+        return bestStandPosition(lookup, cx, cy, cz, ix, iy, iz, Collections.<Long>emptySet());
+    }
+
+    public static Candidate bestStandPosition(MineObstruction.MaterialLookup lookup, double cx, double cy, double cz,
+                                              double ix, double iy, double iz, Set<Long> excludedCells) {
         int tx = (int) Math.floor(ix), tz = (int) Math.floor(iz);
         int standY = (int) Math.floor(cy);
         for (int radius : RADII) {
@@ -33,6 +46,7 @@ public final class PickupApproach {
             double bestDistanceSq = Double.MAX_VALUE;
             for (int[] offset : ApproachCandidates.ring(radius)) {
                 int x = tx + offset[0], z = tz + offset[1];
+                if (excludedCells.contains(ApproachCandidates.key(x, z))) { continue; }
                 if (!MineObstruction.standable(lookup, x, standY, z)) { continue; }
                 double dx = (x + 0.5D) - cx, dy = standY - cy, dz = (z + 0.5D) - cz;
                 double distanceSq = dx * dx + dy * dy + dz * dz;

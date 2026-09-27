@@ -27,4 +27,9 @@ public final class ApproachCandidates {
         }
         return result;
     }
+
+    /** Packs a horizontal cell into one key, so callers can remember/exclude specific (x,z) columns. */
+    public static long key(int x, int z) {
+        return (((long) x) << 32) ^ (z & 0xffffffffL);
+    }
 }

@@ -81,13 +81,21 @@ Python全155件の初回実行で `test_wrong_route_and_content_type` が期待�
 
 ## KI-11 破壊済みブロックのdropが目線より高い位置にあると回収できず停止する
 
-状態: 局所改善を実装／実機確認待ち。優先度P2。
+状態: 局所改善を実装（2回目）／実機確認待ち。優先度P2。
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。対象ブロックの破壊自体は成功するが、生成したdropアイテムがCompanionの目線より高い位置にあり、
 本来ジャンプすれば届く距離でもCompanionがその場で停止し、拾得（`CompanionEntity.PickupTargetTask`）が進行しなくなる。
 根本原因は`PickupTargetTask`/`PickupTask`が`getNavigator().tryMoveToEntityLiving(item, 1.0D)`でitem entityへ直接pathingしていたこと。
 KI-12/KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`PickupApproach`がitem周辺の標準位置リング（半径1→2、companionの現在Y基準）から
 「立てる」候補（`MineObstruction.standable`で足場・頭上を判定。`MineApproach`とも共有）を探し、見つかればitem entityではなくその地面座標へ`tryMoveToXYZ`する（`CompanionEntity.moveTowardItem`）。
 見つからない場合は従来の`tryMoveToEntityLiving`にフォールバックする。`PickupApproachTest`で純粋ロジックを検証済み。
+
+1回目の修正では未解消と実機で再確認された（"ドロップアイテムを見つめて固まることがある"）。KI-13で見つかった構造的に同じ不足がここにもあった。
+`PickupApproach`は候補のstandableしか見ておらず、一度「実行不能」と分かった候補セルを除外する仕組みがなかったため、`PickupTargetTask`が同じ候補を
+再計算のたびに選び直し、実際にはpickup可能距離に入れない位置で足止めされ得た（KI-13の`mineFailedCells`と同根）。
+対処: `PickupTargetTask`専用に`pickupFailedCells`（新しいpickup対象開始時にクリア、上限32件）と、直近の再計算から実位置がほぼ動いていないかの
+`stationary`判定を追加。stationaryなら現在の水平セルを確定的に除外し、`PickupApproach.bestStandPosition`の新しい除外set引数へ渡して二度と同じセルを
+返さないようにした（`MineApproach`と同型の仕組み）。診断ログ（`pickup approach ...`）も追加。汎用の`!agent pickup`（`PickupTask`、targetなし・毎tick対象が
+変わり得る）は対象外のまま単純な`moveTowardItem`を使う。`PickupApproachTest#anExcludedCellIsNeverReturnedEvenIfItWouldOtherwiseWin`で除外の効果を確認済み。
 Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外、[scenario-runner.md](protocol/scenario-runner.md)参照）のため実機確認が必要。
 
 ## KI-12 到達可能な対象でも遮蔽物を回り込めず停止する
@@ -103,21 +111,37 @@ Minecraft地形上の実際の到達可否はJava unit testの対象外（scenar
 
 ## KI-13 見えるが、壊せるとは限らない
 
-状態: 局所改善を実装（2回目）／実機確認待ち。
+状態: 局所改善を実装（4回目）／実機確認待ち。
 ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。すると近くまで接近するが、破壊が行われない。
 「mine_target が採掘可能な stand position を探索しない」という、KI-12と同根の問題として確定した。
 
-1回目の修正（`MineApproach`のLoSのみの候補探索を追加）では未解消と実機で再確認された。回り込む動きはするが途中の状況で停止し採掘しない、との報告。
-調査の結果、2つの不足が判明した。
-(a) `MineApproach`の候補判定がLoSのみで、立てない位置（足場なし・頭上closed等）もLoSが通ってさえいれば選ばれ得た。
-(b) より根本的に、`MineTargetTask`は生の対象座標からの距離が採掘可能圏内（約4.5ブロック）に入った**瞬間**に経路を打ち切り、その場からLoSを1回だけ判定して不可なら即`blocked`で終端していた。
-    `MineApproach`が選んだ候補へ向かう途中、そのしきい値をたまたま先に跨いだ地点（候補とは別の、LoSが通っていない地点）で足止め・即失敗していたため、
-    候補探索自体は正しく回り込む方向を示していても、そこへ実際に到達する前に諦めていた。
+1回目の修正（`MineApproach`のLoSのみの候補探索を追加）では未解消と実機で再確認された。回り込む動きはするが途中の状況で停止し採掘しない、との報告を受け、
+2回目の修正で(a)立てない候補の除外（`MineObstruction.standable`）と(b)採掘可能圏内に入った瞬間の即`blocked`終端をやめ毎秒候補を再計算する方式に変更した。
 
-対処: `MineObstruction.standable`（`PickupApproach`と共有）を`MineApproach`にも適用し、立てない候補を除外した。
-`MineTargetTask`は「採掘可能圏内かつ現在地からLoSが通っている」ときだけ採掘へ進み、それ以外は毎秒`MineApproach`を現在位置から再計算して次の候補へ移動し続ける方式に変更した。
-`blocked`で終端するのは、採掘可能圏内まで来てなお候補が1つも（現在地含め）見つからない場合だけに限定した。採掘直前の最終再検証（`breakBlock`内の同一tickでの再判定）は変更していない。
-`MineApproachTest`にLoSが通るが立てない候補をスキップするテストと、3段積みシナリオのテストを追加・維持。実機での再確認が必要。
+2回目の修正も実機で未解消と確認された。回り込んだ末に停止し、利用者が手動でCompanionを押して位置をわずかにずらすと採掘できた、という報告から、
+`MineApproach`の事前判定が対象セルの理想化した中心座標でLoSを判定しているのに対し、実際の衝突・経路探索がその中心と一致しない位置に着地させることがあり、
+遮蔽物の縁に近い候補ではその差だけでLoSの可否が反転し得る、という3つ目の不足が判明した。3回目の修正で`mineFailedCells`（採掘可能圏内で立っているセルを
+確定的に除外リストへ登録し、`MineApproach`が二度と同じセルを返さないようにする仕組み）を追加した。
+
+3回目の修正も実機で未解消と確認された。利用者からログを直接確認してほしいと依頼があり、診断用ログ（`mine approach ...`、毎秒の位置・候補・除外セル数）を
+追加した状態で再現してもらい、`fml-client-latest.log`をこちらで直接読んで解析した。ログから、Companionが30秒近く同一座標
+（`pos=(39.59,64.00,-418.26)`）に留まり続け、`MineApproach`が同じ候補`(39,64,-419)`（対象`(37,67,-421)`に対する対角線方向・半径2）を返し続けている一方、
+`withinReach`が終始`false`のままであることが分かった。この候補の理想中心での到達距離自乗は`20.25`（ハード上限ぴったり）だが、
+実際の着地位置での到達距離自乗は`21.64`で上限を超えていた。`MineTargetTask`のセル除外登録は`withinReach`が`true`になった時だけ動く設計だったため、
+`withinReach`が一度も`true`にならないこの経路では除外機構自体が発動せず、`MineApproach`が同じ「机上では届くはずだが実際には届かない」候補を無限に返し続けていた。
+
+4つ目の不足として、`MineApproach`が候補選定時に**到達距離（mining reach）を一切見ていなかった**ことが判明した（standable・LoSは見ていたが、届くかどうかは
+`MineTargetTask`側の別チェック任せだった）。対処:
+- `MineObstruction.MAX_REACH_SQUARED`（20.25、`MineTargetTask`の到達判定と共有）を追加し、`MineApproach`の候補フィルタに组み込んだ。実際の着地位置のブレを
+  吸収するため、ハード上限より少し狭い`REACH_MARGIN_SQUARED`（18.0、実距離で約0.26ブロックの余裕）で候補をふるいにかける。
+  これにより上記の対角線候補（20.25）は除外され、同じ半径の軸沿い候補（16.25）が選ばれるようになった。
+- `mineFailedCells`への登録条件を`withinReach`だけでなく、**直近の再計算から実位置がほぼ動いていない（`stationary`）場合も含める**よう拡張した
+  （`withinReach`が真になったことがなくても、机上の候補どおりに動いたのに前進していない＝行き詰まりと判定できるようにするため）。
+  `blocked`終端の条件も同様に`withinReach || stationary`に拡張した。
+
+`MineApproachTest`に、実際に観測された座標そのものを使った回帰テスト（`aBoundaryLineDiagonalCandidateIsSkippedForASaferAxisAlignedOne`）と、
+到達距離だけで候補が棄却されるケース（`candidatesFarOutOfReachDespiteClearSightAreNeverReturned`）を追加。
+診断ログはCompanionEntity側に残しており、次に何か起きた場合もこちらでログを直接読んで解析できる。実機での再確認が必要。
 
 ## KI-14 川を渡れない
 

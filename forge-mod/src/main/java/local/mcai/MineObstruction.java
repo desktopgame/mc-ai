@@ -17,6 +17,9 @@ import net.minecraft.world.World;
 public final class MineObstruction {
     private MineObstruction() { }
 
+    /** Mining reach, matching MineTargetTask's own "close enough to attempt mining" gate (~4.5 blocks). */
+    public static final double MAX_REACH_SQUARED = 20.25D;
+
     /** Supplies the material at a block position, so the sampler can be tested without a live world. */
     public interface MaterialLookup {
         Material get(int x, int y, int z);

@@ -2,6 +2,7 @@ package local.mcai;
 
 import net.minecraft.block.material.Material;
 import org.junit.Test;
+import java.util.Collections;
 import static org.junit.Assert.*;
 
 /**
@@ -44,6 +45,20 @@ public class PickupApproachTest {
         assertNotNull(best);
         assertTrue(MineObstruction.standable(withPit, best.x, best.y, best.z));
         assertFalse("must not return the pit tile", best.x == 10 && best.z == 9);
+    }
+
+    @Test public void anExcludedCellIsNeverReturnedEvenIfItWouldOtherwiseWin() {
+        // Same fixture as the first test, where the winner would normally be (10,0,9). Excluding that
+        // exact cell (as CompanionEntity does after standing there and still not getting within pickup
+        // range) must produce a different candidate instead of the same dead end forever (KI-11).
+        PickupApproach.Candidate first = PickupApproach.bestStandPosition(flatFloor(), 10.5D, 0.0D, 7.5D, 10.5D, 0.1D, 10.5D);
+        assertEquals(10, first.x); assertEquals(9, first.z);
+
+        PickupApproach.Candidate second = PickupApproach.bestStandPosition(flatFloor(), 10.5D, 0.0D, 7.5D, 10.5D, 0.1D, 10.5D,
+                Collections.singleton(ApproachCandidates.key(10, 9)));
+        assertNotNull(second);
+        assertFalse(second.x == 10 && second.z == 9);
+        assertTrue(MineObstruction.standable(flatFloor(), second.x, second.y, second.z));
     }
 
     @Test public void noStandableNeighborReturnsNullRatherThanAGuess() {
