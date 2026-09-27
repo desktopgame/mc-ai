@@ -81,30 +81,32 @@ Python全155件の初回実行で `test_wrong_route_and_content_type` が期待�
 
 ## KI-11 破壊済みブロックのdropが目線より高い位置にあると回収できず停止する
 
-状態: 実機再現あり／原因未確定。優先度P2。
+状態: 局所改善を実装／実機確認待ち。優先度P2。
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。対象ブロックの破壊自体は成功するが、生成したdropアイテムがCompanionの目線より高い位置にあり、
 本来ジャンプすれば届く距離でもCompanionがその場で停止し、拾得（`CompanionEntity.PickupTargetTask`）が進行しなくなる。
-`PickupTargetTask.updateTask`は`getDistanceSqToEntity(item) <= 2.25D`への到達と`getNavigator().tryMoveToEntityLiving(item, 1.0D)`の経路探索だけに依存しており、
-Y方向の到達（ジャンプ）を明示的に補助する処理はない。1.7.10標準のPathNavigateGroundの自動ジャンプで解決できない配置（段差・足場の上のitem等）だと、
-`FollowRetry`（連続3回で`path_not_found`）が尽きるまで待つか、見た目上停止し続ける可能性がある。
-KI-07で未検証としていたpickup系path_not_foundの一部が実機再現ありの不具合として確定した。再現条件（段差の高さ・item位置）の記録とログ採取が必要。
+根本原因は`PickupTargetTask`/`PickupTask`が`getNavigator().tryMoveToEntityLiving(item, 1.0D)`でitem entityへ直接pathingしていたこと。
+KI-12/KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`PickupApproach`がitem周辺の標準位置リング（半径1→2、companionの現在Y基準）から
+「立てる」候補（`MineObstruction.isBlockingMaterial`で足場・頭上を判定）を探し、見つかればitem entityではなくその地面座標へ`tryMoveToXYZ`する（`CompanionEntity.moveTowardItem`）。
+見つからない場合は従来の`tryMoveToEntityLiving`にフォールバックする。`PickupApproachTest`で純粋ロジックを検証済み。
+Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外、[scenario-runner.md](protocol/scenario-runner.md)参照）のため実機確認が必要。
 
 ## KI-12 到達可能な対象でも遮蔽物を回り込めず停止する
 
-状態: 実機再現あり／原因未確定。優先度P2。
+状態: 局所改善を実装／実機確認待ち。優先度P2。
 2026-09-27、collect_block(minecraft:log)の実機確認中に観測。ブロックなど明らかに回り込んで到達できる遮蔽物があっても、Companionが手前で停止し目的の場所まで移動しない。
-mineの到達判定`MineObstruction.accessible`（`MineObstruction.java`）はCompanionの現在の目線位置から対象ブロック中心への直線1本だけを判定するMVP実装で、
-遮蔽されていれば移動やジャンプでの回り込みを試さずその場で`blocked`として終了する（実装コメントに「MVP reachability」と明記済み）。
-また`MineTargetTask`の経路探索は`FollowRetry`により連続3回の`tryMoveToXYZ`失敗で`path_not_found`として打ち切るため、
-1.7.10標準ナビゲータが遠回りルートを見つけられない・見つけるまでに3回を超える場合も同様の症状になり得る。
-KI-07で「壁への回り込み」として未検証としていた項目が実機再現ありの不具合として確定した。直線LoS判定の緩和（複数候補位置からの再判定、ジャンプ込みの再接近）または経路探索の拡張が対処候補。
+根本原因は`MineTargetTask`が常に生の対象座標（`mineX,mineY,mineZ`）へ`tryMoveToXYZ`していたこと。到達判定`MineObstruction.accessible`自体は直線LoSのMVP実装のまま変更していない。
+KI-13・FR-02（実行可能な候補を優先する部分）と合わせて1つの改善として、新設の`MineApproach`が対象周辺の標準位置リング（半径1→2→3→4、companionの現在Y基準、8方位）から
+`MineObstruction.accessible`で実際にLoSが通る候補を探し、見つかった最小半径の中でcompanionに最も近いものへ`tryMoveToXYZ`する（`CompanionEntity.moveTowardMineTarget`）。
+見つからない場合は従来どおり生の対象座標へフォールバックし、採掘直前の最終再検証（同一tickでのblocked判定）は変更していない。`MineApproachTest`で純粋ロジックを検証済み。
+Minecraft地形上の実際の到達可否はJava unit testの対象外（scenario runnerも対象外）のため実機確認が必要。
 
 ## KI-13 見えるが、壊せるとは限らない
 
-状態：実機再現あり／未実装
-ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。
-すると近くまで接近するが、破壊が行われない。
-「mine_target が採掘可能な stand position を探索しない」というより一般的な問題？
+状態: 局所改善を実装／実機確認待ち。
+ブロックを3つぐらい縦に積み、その上に原木を置いてから破壊を指示する。すると近くまで接近するが、破壊が行われない。
+「mine_target が採掘可能な stand position を探索しない」という、KI-12と同根の問題として確定した。KI-11/KI-12と同じ`MineApproach`の標準位置リング探索で対応した。
+`MineApproachTest#elevatedTargetOnAThinColumnIsUnreachableFromDirectlyBelowButReachableFromFartherBack`にこの3段積みシナリオそのものを再現したテストがあり、
+直下では直線LoSが積み上げたブロック自身に遮られるが、水平距離を取った候補では通ることを確認済み。実機での再現条件・確認は別途必要。
 
 ## KI-14 川を渡れない
 

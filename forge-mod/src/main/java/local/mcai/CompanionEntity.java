@@ -308,6 +308,31 @@ public final class CompanionEntity extends EntityCreature {
         resetMineProgress(); stop(); minedStored = 1; mineOutcome = "completed"; result("mine_completed");
     }
 
+    /**
+     * Approach a dropped item via a nearby standable ground tile rather than the item entity itself
+     * (KI-11): more reliable than tryMoveToEntityLiving against a small, possibly still-settling target.
+     * Falls back to the old entity-following move when no ring candidate is standable.
+     */
+    private boolean moveTowardItem(EntityItem item) {
+        PickupApproach.Candidate candidate = PickupApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
+                posX, posY, posZ, item.posX, item.posY, item.posZ);
+        if (candidate != null) { return getNavigator().tryMoveToXYZ(candidate.x, candidate.y, candidate.z, 1.0D); }
+        return getNavigator().tryMoveToEntityLiving(item, 1.0D);
+    }
+
+    /**
+     * Approach the mine target via a nearby stand position with a clear line of sight (KI-12/KI-13),
+     * rather than always closing distance to the raw block coordinate. Falls back to the old behavior
+     * when no ring candidate has a clear line of sight; the final accessibility re-check at mining time
+     * is unchanged either way.
+     */
+    private boolean moveTowardMineTarget() {
+        MineApproach.Candidate candidate = MineApproach.bestStandPosition(MineObstruction.forWorld(worldObj),
+                posX, posY, posZ, mineX, mineY, mineZ, getEyeHeight());
+        if (candidate != null) { return getNavigator().tryMoveToXYZ(candidate.x, candidate.y, candidate.z, 1.0D); }
+        return getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
+    }
+
     private EntityPlayer owner() {
         for (Object value : worldObj.playerEntities) {
             EntityPlayer player = (EntityPlayer) value;
@@ -436,7 +461,7 @@ public final class CompanionEntity extends EntityCreature {
             if (getDistanceSqToEntity(item) <= 2.25D) { getNavigator().clearPathEntity(); collect(item); return; }
             if (--retryTicks <= 0) {
                 retryTicks = 20;
-                boolean found = getNavigator().tryMoveToEntityLiving(item, 1.0D);
+                boolean found = moveTowardItem(item);
                 boolean exhausted = pathRetry.exhausted(found);
                 result(found ? "picking_up" : exhausted ? "path_not_found" : "path_retrying");
             }
@@ -465,7 +490,7 @@ public final class CompanionEntity extends EntityCreature {
             }
             if (--retryTicks <= 0) {
                 retryTicks = 20;
-                boolean found = getNavigator().tryMoveToEntityLiving(item, 1.0D);
+                boolean found = moveTowardItem(item);
                 boolean exhausted = pathRetry.exhausted(found);
                 result(found ? "picking_up" : exhausted ? "path_not_found" : "path_retrying");
             }
@@ -492,7 +517,7 @@ public final class CompanionEntity extends EntityCreature {
                 resetMineProgress(); mineDamage = 0.0F;
                 if (--retryTicks <= 0) {
                     retryTicks = 20;
-                    boolean found = getNavigator().tryMoveToXYZ(mineX, mineY, mineZ, 1.0D);
+                    boolean found = moveTowardMineTarget();
                     boolean exhausted = pathRetry.exhausted(found);
                     result(found ? "mining" : exhausted ? "path_not_found" : "path_retrying");
                 }

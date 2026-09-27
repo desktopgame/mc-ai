@@ -34,9 +34,14 @@ public final class MineObstruction {
     }
 
     public static boolean accessible(final World world, double ex, double ey, double ez, int tx, int ty, int tz) {
-        return accessible(ex, ey, ez, tx, ty, tz, new MaterialLookup() {
+        return accessible(ex, ey, ez, tx, ty, tz, forWorld(world));
+    }
+
+    /** Shared live-world adapter, reused by callers that sample the world outside a single accessible() check. */
+    public static MaterialLookup forWorld(final World world) {
+        return new MaterialLookup() {
             @Override public Material get(int x, int y, int z) { return world.getBlock(x, y, z).getMaterial(); }
-        });
+        };
     }
 
     /** Samples the segment from the eye to the target center. Any other blocking block on the way fails it. */
