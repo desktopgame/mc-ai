@@ -1,5 +1,11 @@
 # Agent Daemon — v0.1.0
 
+## Headless scenarioテスト（fixture / C1）
+
+`python -m unittest discover -s agent/tests -p test_scenarios.py -v` で、Minecraft・LM Studio・既存Daemonなしで実行する。通常の `python -m unittest discover -s agent/tests` にも含まれる。
+test専用の実HTTP handlerへsnapshot/delta/receiptを送り、collect_dropのC1（重複精算・終端取得・固定表示応答・ACK）を3回、freshな状態で繰り返す。操作結果と観測は別々に注入し、物理やpathfindingは模倣しない。
+通信記録とsummaryは `.tools/scenario-results/`。C2～C5・Java側の実bridge・会話履歴登録は対象外。詳細は [scenario runner](../protocol/scenario-runner.md)。
+
 ## 現在の役割
 
 Python標準ライブラリで会話・Tactical判断・観測キャッシュ・非同期goal・Skill進行を処理する。Skillはcollect_drop/mine/collect_block。Skillの確定終端を既存Social providerで表現する通知経路も実装済み。

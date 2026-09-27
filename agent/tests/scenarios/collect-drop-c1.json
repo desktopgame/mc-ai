@@ -1,0 +1,503 @@
+{
+  "scenarioVersion": 1,
+  "name": "collect-drop-c1",
+  "steps": [
+    {
+      "op": "http",
+      "path": "/v1/snapshot",
+      "body": {
+        "version": 1,
+        "session": "world-a",
+        "sequence": 0,
+        "state": {
+          "dimension": 0,
+          "owner": {
+            "position": [
+              0,
+              64,
+              0
+            ],
+            "health": 20,
+            "inventory": {}
+          },
+          "companion": {
+            "id": "companion-a",
+            "position": [
+              0,
+              64,
+              0
+            ],
+            "health": 20,
+            "task": "idle",
+            "result": "none",
+            "inventory": {
+              "minecraft:log": 3
+            }
+          },
+          "hostiles": {},
+          "items": {
+            "item-a": {
+              "type": "minecraft:log",
+              "distance": 4
+            }
+          },
+          "blocks": {}
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 1,
+          "/synced": true,
+          "/sequence": 0
+        }
+      },
+      "save": "snapshot"
+    },
+    {
+      "op": "http",
+      "path": "/v2/execution/open",
+      "body": {
+        "version": 2,
+        "session": "world-a"
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 2,
+          "/session": "world-a",
+          "/capabilities": [
+            "collect_drop_v1",
+            "mine_v1",
+            "collect_block_v1",
+            "skill_terminal_social_v1"
+          ]
+        }
+      },
+      "save": "open"
+    },
+    {
+      "op": "http",
+      "path": "/v2/goal",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "goalRevision": 1,
+        "goal": {
+          "type": "collect_drop",
+          "target": {
+            "item": "minecraft:log"
+          },
+          "count": 2,
+          "constraints": []
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/status": "running",
+          "/action/type": "pickup_target",
+          "/action/targetRef": "item-a",
+          "/action/maxCount": 2,
+          "/skill/progress": {
+            "requested": 2,
+            "acquired": 0,
+            "complete": false
+          }
+        }
+      },
+      "save": "goal"
+    },
+    {
+      "op": "receipt",
+      "from": "goal",
+      "status": "running",
+      "reason": "accepted",
+      "count": 0,
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 2,
+          "/accepted": true
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v1/events",
+      "body": {
+        "version": 1,
+        "session": "world-a",
+        "sequence": 1,
+        "events": [
+          {
+            "type": "item_left_range",
+            "id": "item-a"
+          },
+          {
+            "type": "inventory_changed",
+            "entity": "companion",
+            "added": {
+              "minecraft:log": 2
+            },
+            "removed": {}
+          }
+        ]
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/synced": true,
+          "/sequence": 1
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v1/state",
+      "body": {
+        "version": 1,
+        "session": "world-a"
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/sequence": 1,
+          "/state/companion/inventory": {
+            "minecraft:log": 5
+          },
+          "/state/items": {}
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/skill-status",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/status": "running",
+          "/action": null,
+          "/skill/progress/acquired": 0
+        }
+      }
+    },
+    {
+      "op": "receipt",
+      "from": "goal",
+      "status": "succeeded",
+      "reason": "completed",
+      "count": 2,
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 2,
+          "/accepted": true
+        }
+      }
+    },
+    {
+      "op": "receipt",
+      "from": "goal",
+      "status": "succeeded",
+      "reason": "completed",
+      "count": 2,
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 2,
+          "/accepted": true
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/skill-status",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/status": "completed",
+          "/action": null,
+          "/skill/result/status": "completed",
+          "/skill/result/reason": "completed",
+          "/skill/result/progress": {
+            "requested": 2,
+            "acquired": 2,
+            "complete": true
+          }
+        }
+      },
+      "save": "completed"
+    },
+    {
+      "op": "http",
+      "path": "/v2/action-result",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "goalRevision": {
+          "$ref": "goal/body/goalRevision"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/action/skillInstanceId"
+        },
+        "actionId": {
+          "$ref": "goal/body/action/actionId"
+        },
+        "actionSequence": {
+          "$ref": "goal/body/action/actionSequence"
+        },
+        "status": "succeeded",
+        "reason": "completed",
+        "acquired": {
+          "item": "minecraft:log",
+          "count": 1
+        }
+      },
+      "expect": {
+        "status": 409,
+        "json": {
+          "/version": 2,
+          "/error": "conflicting_result"
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/skill-status",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "": {
+            "$ref": "completed/body"
+          }
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/terminal-events",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/events/0/status": "completed",
+          "/events/0/reason": "completed",
+          "/events/0/type": "collect_drop",
+          "/events/0/skillInstanceId": {
+            "$ref": "goal/body/skill/skillInstanceId"
+          },
+          "/events/0/goalRevision": 1,
+          "/events/0/eventSequence": 1,
+          "/events/0/progress": {
+            "requested": 2,
+            "acquired": 2,
+            "complete": true
+          },
+          "/hasMore": false,
+          "/overflow": false
+        }
+      },
+      "save": "events"
+    },
+    {
+      "op": "http",
+      "path": "/v2/terminal-events",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/events": [
+            {
+              "$ref": "events/body/events/0"
+            }
+          ],
+          "/hasMore": false,
+          "/overflow": false
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/social/skill-terminal",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        },
+        "terminalId": {
+          "$ref": "events/body/events/0/terminalId"
+        },
+        "conversationSession": "conversation-a",
+        "player": "TestOwner",
+        "deliveryId": "delivery-a"
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/version": 2,
+          "/terminalId": {
+            "$ref": "events/body/events/0/terminalId"
+          },
+          "/skillInstanceId": {
+            "$ref": "goal/body/skill/skillInstanceId"
+          },
+          "/deliveryId": "delivery-a",
+          "/mode": "fallback",
+          "/variantId": "fallback",
+          "/say": "原木回収: 完了。原木を2/2個回収。"
+        }
+      },
+      "save": "presentation"
+    },
+    {
+      "op": "http",
+      "path": "/v2/social/terminal-delivery",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        },
+        "terminalId": {
+          "$ref": "events/body/events/0/terminalId"
+        },
+        "conversationSession": "conversation-a",
+        "player": "TestOwner",
+        "deliveryId": "delivery-a",
+        "outcome": "displayed",
+        "variantId": "fallback"
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/accepted": true
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/social/terminal-delivery",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        },
+        "terminalId": {
+          "$ref": "events/body/events/0/terminalId"
+        },
+        "conversationSession": "conversation-a",
+        "player": "TestOwner",
+        "deliveryId": "delivery-a",
+        "outcome": "displayed",
+        "variantId": "fallback"
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/accepted": true
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/terminal-events",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "/events": [],
+          "/hasMore": false,
+          "/overflow": false
+        }
+      }
+    },
+    {
+      "op": "http",
+      "path": "/v2/skill-status",
+      "body": {
+        "version": 2,
+        "session": "world-a",
+        "daemonEpoch": {
+          "$ref": "open/body/daemonEpoch"
+        },
+        "skillInstanceId": {
+          "$ref": "goal/body/skill/skillInstanceId"
+        }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "": {
+            "$ref": "completed/body"
+          }
+        }
+      }
+    }
+  ]
+}

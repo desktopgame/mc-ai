@@ -1,7 +1,18 @@
 # Headless protocol scenario runner — 設計・導入手順
 
-状態: **設計のみ・未実装**。2026-09-27、`develop` / `79f0998` を調査。
-本書作成ではコード・テスト実装、Minecraft起動、Daemon再起動、jar配置を行わない。
+状態: **fixtureとC1を実装済み**（2026-09-27）。設計調査基点 `79f0998`、実装作業基点 `c07eae2`。
+実装は `agent/tests/scenario_support/`、C1は `agent/tests/scenarios/collect-drop-c1.json`、入口は `agent/tests/test_scenarios.py`。
+DSLはhttp / receipt / advance / tick / restartの5命令。C2～C5、Java contract replay、専用CLIは未実装。
+
+```powershell
+python -m unittest discover -s agent/tests -p test_scenarios.py -v
+```
+
+C1は19 stepを新しいfixtureで3回繰り返す。開始所持品3→5でも成果2、重複/矛盾receipt、終端イベントの一意性、固定presentation、ACK再送とoutbox解放を検証する。providerは未設定なので会話履歴登録はこのC1では検証しない。
+補助テストは時計配線・終了処理・5命令・期待値不一致の検出・型/参照・発行時receipt bindingを確認する。
+2026-09-27確認: scenario用6テスト成功、通常discoverは167件成功。全体テストの初回には既存 `test_wrong_route_and_content_type` がWinError 10053で失敗し、再実行で成功した（既知のKI-10）。C1は両実行で成功。本番のHTTPエラー処理は今回変更していない。
+結果はGit管理外の `.tools/scenario-results/` に保存する。期待値を故意に誤らせる自己テストのfailed記録も含む。
+本番DaemonやMinecraftは起動・変更せず、テスト専用の空きportでHTTP serverを起動する。以下は実装範囲を超える後続計画も含む。
 
 ## 1. 目的と検証範囲
 
@@ -125,7 +136,7 @@ receiptは元viewのsession/epoch/revision/skillInstanceId/actionId/actionSequen
 
 ### 記述例: collect_dropを1個回収
 
-これは提案DSLの例であり、現時点で実行可能なrunnerは存在しない。
+これはDSLの基本例。実装済みC1は開始所持品と重複配送の検証も含むため、実行するJSONは `agent/tests/scenarios/collect-drop-c1.json` を使う。
 
 ```json
 {
@@ -273,7 +284,7 @@ python -m unittest discover -s agent/tests -p test_scenarios.py
 .\scripts\forge.ps1 test --offline --tests local.mcai.ScenarioContractTest
 ```
 
-本書の段階では上記scenario専用入口は存在しない。既存unit testの成功数をscenario runnerの検証実績に数えない。
+現時点では先頭のunittest入口のみ実装済み。PowerShellラッパーとJava ScenarioContractTestは存在しない。既存unit testの成功数をscenario runnerの検証実績に数えない。
 
 ## 10. 今回追加しないもの
 
