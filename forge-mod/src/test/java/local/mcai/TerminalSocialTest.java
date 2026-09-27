@@ -89,6 +89,30 @@ public class TerminalSocialTest {
         assertFalse(state.accept("a", "FA", 0, window));
     }
 
+    @Test public void terminalRequestIdentityMatchesActionBridgeBinding() {
+        // KI-01: PingBridge must key dedupe/reset by the same full binding identity ActionBridge uses
+        // (daemonEpoch|session|skillInstanceId|terminalId), not by the bare terminalId, so a reused
+        // terminalId across a different daemon epoch, exec session or skill instance is never collapsed
+        // with an unrelated terminal.
+        PingBridge.TerminalRequest base = new PingBridge.TerminalRequest("boot", "world", "s-1", "t-1", "F",
+                java.util.Collections.<String>emptyList(), "d-1");
+        assertEquals("boot|world|s-1|t-1", base.identity);
+
+        PingBridge.TerminalRequest sameFields = new PingBridge.TerminalRequest("boot", "world", "s-1", "t-1", "F",
+                java.util.Collections.<String>emptyList(), "d-2");
+        assertEquals(base.identity, sameFields.identity);   // deliveryId does not participate in identity
+
+        PingBridge.TerminalRequest otherEpoch = new PingBridge.TerminalRequest("boot2", "world", "s-1", "t-1", "F",
+                java.util.Collections.<String>emptyList(), "d-1");
+        PingBridge.TerminalRequest otherSession = new PingBridge.TerminalRequest("boot", "world2", "s-1", "t-1", "F",
+                java.util.Collections.<String>emptyList(), "d-1");
+        PingBridge.TerminalRequest otherSkill = new PingBridge.TerminalRequest("boot", "world", "s-2", "t-1", "F",
+                java.util.Collections.<String>emptyList(), "d-1");
+        assertNotEquals(base.identity, otherEpoch.identity);
+        assertNotEquals(base.identity, otherSession.identity);
+        assertNotEquals(base.identity, otherSkill.identity);
+    }
+
     private JsonObject eventJson() {
         return new JsonParser().parse("{\"version\":2,\"category\":\"skill_terminal\",\"terminalId\":\"t-1\","
                 + "\"eventSequence\":17,\"daemonEpoch\":\"boot\",\"session\":\"world\",\"goalRevision\":42,"

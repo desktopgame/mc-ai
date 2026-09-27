@@ -51,7 +51,7 @@ public final class PingBridge {
 
     /** A finalised terminal waiting to be presented, displayed and acknowledged. */
     public static final class TerminalRequest {
-        public final String daemonEpoch, execSession, skillInstanceId, terminalId, fallback, deliveryId;
+        public final String daemonEpoch, execSession, skillInstanceId, terminalId, fallback, deliveryId, identity;
         public final List<String> candidateSays;
         String conversationSession, player;
         public TerminalRequest(String daemonEpoch, String execSession, String skillInstanceId, String terminalId,
@@ -59,6 +59,10 @@ public final class PingBridge {
             this.daemonEpoch = daemonEpoch; this.execSession = execSession; this.skillInstanceId = skillInstanceId;
             this.terminalId = terminalId; this.fallback = fallback; this.candidateSays = candidateSays;
             this.deliveryId = deliveryId;
+            // Full binding identity (epoch|session|skillInstanceId|terminalId), matching ActionBridge's
+            // TerminalDeliveryState keying, so dedupe/reset never collapses two different bindings that
+            // happen to reuse the same bare terminalId (KI-01).
+            this.identity = TerminalDeliveryState.identity(daemonEpoch, execSession, skillInstanceId, terminalId);
         }
     }
     private static final class Completion {
@@ -111,14 +115,14 @@ public final class PingBridge {
         if (owner == null) { return false; }
         request.player = owner.getCommandSenderName();
         request.conversationSession = session;
-        if (!seenTerminals.add(request.terminalId)) { return false; }
+        if (!seenTerminals.add(request.identity)) { return false; }
         while (seenTerminals.size() > MAX_SEEN_TERMINALS) {
             Iterator<String> iterator = seenTerminals.iterator(); iterator.next(); iterator.remove();
         }
-        terminalRequests.put(request.terminalId, request);
+        terminalRequests.put(request.identity, request);
         long now = System.nanoTime();
-        if (!deliveries.accept(request.terminalId, request.fallback, now, TERMINAL_FALLBACK_NANOS)) { return false; }
-        if (!queue.offerTerminal(request.terminalId, request.fallback, now)) { resolveTerminalFallback(request.terminalId); }
+        if (!deliveries.accept(request.identity, request.fallback, now, TERMINAL_FALLBACK_NANOS)) { return false; }
+        if (!queue.offerTerminal(request.identity, request.fallback, now)) { resolveTerminalFallback(request.identity); }
         return true;
     }
 
