@@ -1,4 +1,4 @@
-"""Real HTTP C1 lifecycle and focused checks for the scenario test infrastructure."""
+"""Real HTTP C1/C2 lifecycles and focused checks for the scenario test infrastructure."""
 import copy
 import json
 import sys
@@ -14,9 +14,15 @@ from scenario_support.peer import ScriptedForgePeer
 from scenario_support.runner import OPS, ScenarioFormatError, ScenarioRunner, equal, pointer
 
 C1 = TESTS / "scenarios" / "collect-drop-c1.json"
+C2 = TESTS / "scenarios" / "collect-block-c2.json"
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_c2_alternate_block_then_observed_drop_over_http(self):
+        for repeat in range(3):
+            with self.subTest(repeat=repeat):
+                ScenarioRunner().run_file(C2)
+
     def test_c1_real_http_repeats_with_fresh_services(self):
         epochs = set()
         for repeat in range(3):
